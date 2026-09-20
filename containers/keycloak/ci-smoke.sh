@@ -42,10 +42,14 @@ for _ in $(seq 30); do
 done
 docker exec "$pg" pg_isready -U "$db_user" -d "$db_name"
 
+# KC_BOOTSTRAP_ADMIN_USERNAME defaults to "user" with an empty password, and
+# Keycloak refuses to start on "bootstrap-admin-username available only when
+# bootstrap admin password is set" — so the password has to be supplied here.
 docker run -d --name "$name" --network "$net" \
   -e KEYCLOAK_DATABASE_NAME="$db_name" \
   -e KEYCLOAK_DATABASE_USER="$db_user" \
   -e KEYCLOAK_DATABASE_PASSWORD="$db_pass" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$db_pass" \
   "$IMAGE" >/dev/null
 
 for _ in $(seq 90); do
