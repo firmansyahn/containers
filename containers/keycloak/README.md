@@ -27,12 +27,11 @@ overriding `image.registry` and `image.repository` only.
 
 ## Smoke test
 
-[`ci-smoke.sh`](ci-smoke.sh) runs the amd64 build with **no database
-configured**: `KC_DB` ends up empty, the entrypoint runs `kc.sh start-dev`, and
-Keycloak falls back to its embedded dev-file store. The test waits for the
-`Keycloak <version> ... started in` log line and asserts that version matches
-`APP_VERSION` in the Dockerfile.
+[`ci-smoke.sh`](ci-smoke.sh) stands up a throwaway PostgreSQL on its own docker
+network, aliased `postgresql`, then starts the amd64 build against it, waits for
+the `Keycloak <version> ... started in` log line, and asserts that version
+matches `APP_VERSION` in the Dockerfile.
 
-That exercises the bundled JRE, the Quarkus augmentation and the Bitnami
-entrypoint end to end, but it is *not* a production configuration check — a real
-deployment still needs PostgreSQL and the chart's own settings.
+The database is not optional. `KEYCLOAK_DATABASE_HOST` defaults to `postgresql`
+and the entrypoint blocks on `wait-for-port` until it answers, then exits — so
+the test also covers the real schema migration, not just process startup.
