@@ -1,0 +1,181 @@
+name: build
+
+# Reusable build for one app. Called by the per-app workflows, which own the
+# path filters; everything below is driven by what is actually in the tree, so
+# adding a version branch never needs a workflow edit.
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'Directory under containers/ to build'
+        required: true
+        type: string
+      branch:
+        description: 'Single version branch to build (blank = all present)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  discover:
+    name: discover version branches
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.branches.outputs.matrix }}
+      latest: ${{ steps.branches.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: branches
+        name: List containers/${{ inputs.app }}/*/debian-12
+        run: |
+          set -euo pipefail
+          app='${{ inputs.app }}'
+          branches=$(find "containers/$app" -mindepth 2 -maxdepth 2 -type d -name debian-12 \
+            | cut -d/ -f3 | sort -V)
+          [ -n "$branches" ] || { echo "::error::no version branches found under containers/$app"; exit 1; }
+
+          # :latest follows the highest APP_VERSION, not the highest directory
+          # name — keycloak keeps its newest release in a branch called "26"
+          # while an older pinned one sits in "26.6".
+          latest_branch=''; latest_version=''
+          while read -r b; do
+            v=$(grep -oP '\bAPP_VERSION="\K[^"]+' "containers/$app/$b/debian-12/Dockerfile")
+            echo "  $b -> $v"
+            if [ -z "$latest_version" ] || \
+               [ "$(printf '%s\n%s\n' "$latest_version" "$v" | sort -V | tail -1)" = "$v" ]; then
+              latest_version="$v"; latest_branch="$b"
+            fi
+          done <<< "$branches"
+          echo "latest=$latest_branch" >> "$GITHUB_OUTPUT"
+
+          wanted='${{ inputs.branch }}'
+          if [ -n "$wanted" ]; then
+            echo "$branches" | grep -qx "$wanted" || { echo "::error::branch $wanted not in repo"; exit 1; }
+            branches="$wanted"
+          fi
+
+          echo "matrix=$(echo "$branches" | jq -Rsc 'split("\n") | map(select(length > 0)) | {branch: .}')" >> "$GITHUB_OUTPUT"
+          echo "Building: $(echo "$branches" | tr '\n' ' ')(latest = $latest_branch)"
+
+  build:
+    name: ${{ inputs.app }} ${{ matrix.branch }}
+    needs: discover
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        name: Read version out of the Dockerfile
+        run: |
+          set -euo pipefail
+          context="containers/${{ inputs.app }}/${{ matrix.branch }}/debian-12"
+          dockerfile="$context/Dockerfile"
+
+          # Bitnami stamps both of these into every release commit, so the tags
+          # always match whatever tarball the Dockerfile actually pulls.
+          app_version=$(grep -oP '\bAPP_VERSION="\K[^"]+' "$dockerfile")
+          revision=$(grep -oP '\bIMAGE_REVISION="\K[^"]+' "$dockerfile")
+          image="${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/${{ inputs.app }}"
+
+          tags="${image}:${app_version}-debian-12-r${revision}
+          ${image}:${app_version}
+          ${image}:${{ matrix.branch }}"
+          if [ '${{ matrix.branch }}' = '${{ needs.discover.outputs.latest }}' ]; then
+            tags="${tags}
+          ${image}:latest"
+          fi
+
+          {
+            echo "context=$context"
+            echo "image=$image"
+            echo "app_version=$app_version"
+            echo "test_tag=${image}:ci-${{ github.run_id }}-${{ matrix.branch }}"
+            echo "tags<<EOF"
+            echo "$tags" | sed 's/^ *//'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Optional: avoids anonymous Docker Hub rate limits when pulling
+      # bitnami/minideb. Set the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN
+      # secret on the repo to enable; skipped entirely when they are absent.
+      - name: Log in to Docker Hub
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # GHCR_TOKEN is a classic PAT with write:packages. It is needed because
+      # these packages were first pushed by hand (the Bitnami rescue) rather
+      # than by Actions, so they are not linked to this repo and GITHUB_TOKEN
+      # gets "denied: permission_denied: write_package". Link a package to the
+      # repo under its Actions access settings and GITHUB_TOKEN takes over by
+      # itself — the secret can then be deleted with no workflow change.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64 for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.meta.outputs.context }}
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.meta.outputs.test_tag }}
+          cache-from: type=gha,scope=${{ inputs.app }}-${{ matrix.branch }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.app }}-${{ matrix.branch }}
+
+      - name: Smoke test
+        env:
+          IMAGE: ${{ steps.meta.outputs.test_tag }}
+          WANT: ${{ steps.meta.outputs.app_version }}
+        run: |
+          set -euo pipefail
+          script="containers/${{ inputs.app }}/ci-smoke.sh"
+          [ -x "$script" ] || { echo "::error::$script is missing or not executable"; exit 1; }
+          "$script"
+
+      - name: Build and push ${{ env.PLATFORMS }}
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.meta.outputs.context }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          # Links the GHCR package to this repo in the UI.
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Keep the manifest list a plain multi-arch index, like the images
+          # this mirror replaces — no unknown/unknown attestation entries.
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ inputs.app }}-${{ matrix.branch }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.app }}-${{ matrix.branch }}
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### ${{ inputs.app }} ${{ steps.meta.outputs.app_version }}"
+            echo '```'
+            echo '${{ steps.meta.outputs.tags }}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

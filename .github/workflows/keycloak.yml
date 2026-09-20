@@ -1,16 +1,16 @@
-name: redis
+name: keycloak
 
 on:
   push:
     branches: [main]
     paths:
-      - 'containers/redis/**'
-      - '.github/workflows/redis.yml'
+      - 'containers/keycloak/**'
+      - '.github/workflows/keycloak.yml'
       - '.github/workflows/build.yml'
   pull_request:
     paths:
-      - 'containers/redis/**'
-      - '.github/workflows/redis.yml'
+      - 'containers/keycloak/**'
+      - '.github/workflows/keycloak.yml'
       - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
@@ -20,12 +20,12 @@ on:
         default: ''
 
 jobs:
-  redis:
+  keycloak:
     uses: ./.github/workflows/build.yml
     secrets: inherit
     permissions:
       contents: read
       packages: write
     with:
-      app: redis
+      app: keycloak
       branch: ${{ inputs.branch || '' }}
