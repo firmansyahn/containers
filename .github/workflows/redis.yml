@@ -1,0 +1,175 @@
+name: redis
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'containers/redis/**'
+      - '.github/workflows/redis.yml'
+  pull_request:
+    paths:
+      - 'containers/redis/**'
+      - '.github/workflows/redis.yml'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Version branch to build (blank = all branches present in the repo)'
+        required: false
+        default: ''
+
+env:
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  discover:
+    name: discover version branches
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.branches.outputs.matrix }}
+      latest: ${{ steps.branches.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: branches
+        name: List containers/redis/*/debian-12
+        run: |
+          set -euo pipefail
+          branches=$(find containers/redis -mindepth 2 -maxdepth 2 -type d -name debian-12 \
+            | cut -d/ -f3 | sort -V)
+          [ -n "$branches" ] || { echo "::error::no version branches found under containers/redis"; exit 1; }
+
+          # The highest branch present is the one that gets the :latest tag.
+          echo "latest=$(echo "$branches" | tail -1)" >> "$GITHUB_OUTPUT"
+
+          wanted='${{ inputs.branch }}'
+          if [ -n "$wanted" ]; then
+            echo "$branches" | grep -qx "$wanted" || { echo "::error::branch $wanted not in repo"; exit 1; }
+            branches="$wanted"
+          fi
+
+          echo "matrix=$(echo "$branches" | jq -Rsc 'split("\n") | map(select(length > 0)) | {branch: .}')" >> "$GITHUB_OUTPUT"
+          echo "Building: $(echo "$branches" | tr '\n' ' ')"
+
+  build:
+    name: redis ${{ matrix.branch }}
+    needs: discover
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        name: Read version out of the Dockerfile
+        run: |
+          set -euo pipefail
+          context="containers/redis/${{ matrix.branch }}/debian-12"
+          dockerfile="$context/Dockerfile"
+
+          # Bitnami stamps both of these into every release commit, so the tags
+          # always match whatever tarball the Dockerfile actually pulls.
+          app_version=$(grep -oP '\bAPP_VERSION="\K[^"]+' "$dockerfile")
+          revision=$(grep -oP '\bIMAGE_REVISION="\K[^"]+' "$dockerfile")
+          image="${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/redis"
+
+          tags="${image}:${app_version}-debian-12-r${revision}
+          ${image}:${app_version}
+          ${image}:${{ matrix.branch }}"
+          if [ '${{ matrix.branch }}' = '${{ needs.discover.outputs.latest }}' ]; then
+            tags="${tags}
+          ${image}:latest"
+          fi
+
+          {
+            echo "context=$context"
+            echo "image=$image"
+            echo "app_version=$app_version"
+            echo "test_tag=${image}:ci-${{ github.run_id }}"
+            echo "tags<<EOF"
+            echo "$tags" | sed 's/^ *//'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Optional: avoids anonymous Docker Hub rate limits when pulling
+      # bitnami/minideb. Set the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN
+      # secret on the repo to enable; skipped entirely when they are absent.
+      - name: Log in to Docker Hub
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64 for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.meta.outputs.context }}
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.meta.outputs.test_tag }}
+          cache-from: type=gha,scope=redis-${{ matrix.branch }}
+          cache-to: type=gha,mode=max,scope=redis-${{ matrix.branch }}
+
+      - name: Smoke test
+        env:
+          IMAGE: ${{ steps.meta.outputs.test_tag }}
+          WANT: ${{ steps.meta.outputs.app_version }}
+        run: |
+          set -euo pipefail
+          trap 'docker logs redis-test 2>&1 | tail -30; docker rm -f redis-test >/dev/null 2>&1 || true' EXIT
+
+          docker run -d --name redis-test -e ALLOW_EMPTY_PASSWORD=yes "$IMAGE"
+          for _ in $(seq 30); do
+            if docker exec redis-test redis-cli ping 2>/dev/null | grep -q PONG; then
+              got=$(docker exec redis-test redis-cli INFO server | grep -oP 'redis_version:\K[0-9.]+' | tr -d '\r')
+              [ "$got" = "$WANT" ] || { echo "::error::image reports redis $got, Dockerfile says $WANT"; exit 1; }
+              echo "redis $got answered PONG as uid $(docker exec redis-test id -u)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::redis never answered PING"
+          exit 1
+
+      - name: Build and push ${{ env.PLATFORMS }}
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.meta.outputs.context }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          # Links the GHCR package to this repo in the UI.
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Keep the manifest list a plain multi-arch index, like the images
+          # this mirror replaces — no unknown/unknown attestation entries.
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=redis-${{ matrix.branch }}
+          cache-to: type=gha,mode=max,scope=redis-${{ matrix.branch }}
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### redis ${{ steps.meta.outputs.app_version }}"
+            echo '```'
+            echo '${{ steps.meta.outputs.tags }}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
