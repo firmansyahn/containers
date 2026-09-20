@@ -70,9 +70,13 @@ Two things that are settings, not code, and cost an afternoon each if unknown:
 - **Packages are private by default, even under a public repo**, and no API
   changes it — it is the Danger Zone on the package settings page in the web UI.
 - **`GITHUB_TOKEN` cannot push to a package that was not created by Actions.**
-  These packages were first pushed by hand, so buildx fails with
-  `denied: permission_denied: write_package`. The workflow authenticates with a
-  `GHCR_TOKEN` secret (a classic PAT with `write:packages`) and falls back to
-  `GITHUB_TOKEN` when that secret is absent — so linking a package to this repo
-  under its Actions access settings lets the secret be deleted with no workflow
-  change.
+  These packages were first pushed by hand, so every push failed with
+  `denied: permission_denied: write_package` until this repo was given Write
+  under each package's **Manage Actions access** setting. There is no API for
+  that — not REST, not GraphQL, and the `org.opencontainers.image.source` label
+  does not do it retroactively — so it is a click on each package's settings
+  page, once.
+
+  Builds now push with plain `GITHUB_TOKEN`. The login falls back to a
+  `GHCR_TOKEN` secret (a classic PAT with `write:packages`) if one is ever set,
+  which is the escape hatch for a package created outside Actions again.

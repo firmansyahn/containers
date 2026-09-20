@@ -119,12 +119,16 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # GHCR_TOKEN is a classic PAT with write:packages. It is needed because
-      # these packages were first pushed by hand (the Bitnami rescue) rather
-      # than by Actions, so they are not linked to this repo and GITHUB_TOKEN
-      # gets "denied: permission_denied: write_package". Link a package to the
-      # repo under its Actions access settings and GITHUB_TOKEN takes over by
-      # itself — the secret can then be deleted with no workflow change.
+      # Normally GITHUB_TOKEN, which is what runs today: both packages grant
+      # this repo Write under their Actions access settings.
+      #
+      # That had to be granted by hand. These packages were first pushed by the
+      # Bitnami rescue rather than by Actions, so nothing linked them to this
+      # repo and every push failed with "denied: permission_denied:
+      # write_package" — and there is no API for the fix, only the package
+      # settings page. GHCR_TOKEN (a classic PAT with write:packages) is the
+      # escape hatch if that access is ever lost, or for a package created
+      # outside Actions again; set the secret and it takes over.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
