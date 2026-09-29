@@ -183,3 +183,116 @@ jobs:
             echo '${{ steps.meta.outputs.tags }}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  prune:
+    name: prune orphaned ${{ inputs.app }} manifests
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    # One prune per package at a time: the reachable set is computed by reading
+    # the registry, so a concurrent run could see a half-pushed index.
+    concurrency: prune-${{ inputs.app }}
+    steps:
+      # Every tag is a multi-arch index, and GHCR lists that index's per-arch
+      # children as their own untagged versions. Re-pushing a moving tag like
+      # :latest or :8.6 leaves the old index and its children behind forever —
+      # 16 had piled up under redis before this job existed.
+      #
+      # So "untagged" is not the same as "unused": a child is still serving
+      # pulls for its architecture. Deleting untagged wholesale breaks
+      # `docker pull --platform` on tags that look perfectly healthy in the UI,
+      # and two indexes can share a child when only one arch was rebuilt.
+      # Reachability from a tag is the only safe test.
+      - name: Delete untagged manifests no tag points at
+        env:
+          # GITHUB_TOKEN cannot delete versions of a user-owned package, only
+          # org-owned ones. These are user-owned, so this needs the PAT; the
+          # job no-ops rather than failing the build when it is absent.
+          GHCR_PAT: ${{ secrets.GHCR_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          APP: ${{ inputs.app }}
+        run: |
+          set -u
+
+          if [ -z "$GHCR_PAT" ]; then
+            echo "::notice::GHCR_TOKEN not set — skipping prune (needs a PAT with delete:packages)"
+            exit 0
+          fi
+
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          repo=$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')
+          image="$owner/$repo/$APP"
+          pkg="$repo%2F$APP"
+          accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+
+          tok=$(curl -fsSL -u "$owner:$GHCR_PAT" \
+            "https://ghcr.io/token?scope=repository:$image:pull&service=ghcr.io" | jq -r '.token')
+          if [ -z "$tok" ] || [ "$tok" = "null" ]; then
+            echo "::error::no registry pull token for $image"; exit 1
+          fi
+
+          manifest() {
+            curl -fsSL -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+              "https://ghcr.io/v2/$image/manifests/$1"
+          }
+
+          keep=$(mktemp); orphans=$(mktemp)
+
+          # An unreadable tag means the walk is incomplete, and an incomplete
+          # reachable set deletes live images. Bail instead.
+          for t in $(curl -fsSL -H "Authorization: Bearer $tok" \
+                       "https://ghcr.io/v2/$image/tags/list" | jq -r '.tags[]?'); do
+            body=$(manifest "$t")
+            if [ -z "$body" ]; then
+              echo "::error::cannot read tag $t — aborting before deleting anything"; exit 1
+            fi
+            curl -fsSI -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+              "https://ghcr.io/v2/$image/manifests/$t" \
+              | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}' >> "$keep"
+            echo "$body" | jq -r '.manifests[]?.digest' >> "$keep"
+          done
+          sort -u -o "$keep" "$keep"
+          echo "reachable from tags: $(wc -l < "$keep")"
+
+          versions=$(mktemp)
+          if ! gh api --paginate "users/$owner/packages/container/$pkg/versions?per_page=100" > "$versions"; then
+            echo "::error::cannot list versions of $repo/$APP"; exit 1
+          fi
+
+          jq -r '.[] | "\(.name) \(.id)"' "$versions" | while read -r dig id; do
+            grep -qxF "$dig" "$keep" || echo "$dig $id"
+          done > "$orphans"
+
+          total=$(wc -l < "$orphans")
+          if [ "$total" -eq 0 ]; then
+            echo "nothing to prune"; exit 0
+          fi
+
+          # Children first: if the run dies midway, a surviving index still
+          # resolves, whereas an index whose children went first does not.
+          leaves=''; indexes=''
+          while read -r dig id; do
+            if manifest "$dig" | jq -e 'has("manifests")' >/dev/null 2>&1; then
+              indexes="$indexes $id"
+            else
+              leaves="$leaves $id"
+            fi
+          done < "$orphans"
+
+          failed=0
+          for id in $leaves $indexes; do
+            if gh api -X DELETE "users/$owner/packages/container/$pkg/versions/$id" >/dev/null 2>&1; then
+              echo "  deleted $id"
+            else
+              echo "::warning::could not delete version $id"
+              failed=$((failed + 1))
+            fi
+          done
+
+          {
+            echo "### pruned $APP"
+            echo "$((total - failed)) of $total orphaned manifests deleted"
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
