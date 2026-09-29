@@ -88,6 +88,17 @@ jobs:
           revision=$(grep -oP '\bIMAGE_REVISION="\K[^"]+' "$dockerfile")
           image="${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/${{ inputs.app }}"
 
+          # The one piece of per-package text a monorepo can differentiate: the
+          # README under it on the package page always comes from the repo root,
+          # because image.source takes a repo URL and not a subdirectory.
+          # Newlines are folded out — the annotation has to be a single line.
+          desc_file="containers/${{ inputs.app }}/description.txt"
+          [ -f "$desc_file" ] || { echo "::error::$desc_file is missing"; exit 1; }
+          description=$(tr '\n' ' ' < "$desc_file" | sed 's/  */ /g; s/ *$//')
+          [ -n "$description" ] || { echo "::error::$desc_file is empty"; exit 1; }
+          [ "${#description}" -le 512 ] || \
+            { echo "::error::description is ${#description} chars, GHCR caps it at 512"; exit 1; }
+
           tags="${image}:${app_version}-debian-12-r${revision}
           ${image}:${app_version}
           ${image}:${{ matrix.branch }}"
@@ -100,6 +111,7 @@ jobs:
             echo "context=$context"
             echo "image=$image"
             echo "app_version=$app_version"
+            echo "description=$description"
             echo "test_tag=${image}:ci-${{ github.run_id }}-${{ matrix.branch }}"
             echo "tags<<EOF"
             echo "$tags" | sed 's/^ *//'
@@ -165,8 +177,18 @@ jobs:
           platforms: ${{ env.PLATFORMS }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # Links the GHCR package to this repo in the UI.
-          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Links the GHCR package to this repo in the UI. The description
+          # override matters because the upstream Dockerfiles label these
+          # "Application packaged by Broadcom, Inc." — true of the tarball
+          # inside, misleading about who built the image.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=${{ steps.meta.outputs.description }}
+          # GHCR takes the package-page description from the *index*
+          # annotations, not from the per-arch labels above, so a multi-arch
+          # image shows no description at all unless it is set here as well.
+          annotations: |
+            index,manifest:org.opencontainers.image.description=${{ steps.meta.outputs.description }}
           # Keep the manifest list a plain multi-arch index, like the images
           # this mirror replaces — no unknown/unknown attestation entries.
           provenance: false

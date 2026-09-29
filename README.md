@@ -18,8 +18,17 @@ Images are published to `ghcr.io/firmansyahn/containers/<app>`, multi-arch for
 
 ```
 containers/<app>/ci-smoke.sh              # per-app test, run against every build
+containers/<app>/description.txt          # GHCR package-page description
 containers/<app>/<branch>/<os flavour>/   # build context, copied from upstream
 ```
+
+`description.txt` is the only per-package text GHCR will show: the README it
+renders underneath is always this root one, for every package, because
+`org.opencontainers.image.source` takes a repo URL and not a subdirectory. So
+each file spends part of its 512-character budget linking to that app's own
+README. It is written as an index **annotation** rather than only a label —
+GHCR reads the description of a multi-arch image from the index, and ignores
+the per-architecture labels.
 
 Nothing about an app is configured in the workflow. Each app has a thin caller
 workflow (`.github/workflows/<app>.yml`) that owns the path filters and hands
