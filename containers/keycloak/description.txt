@@ -1,0 +1,1 @@
+Self-built mirror of the Bitnami Keycloak container, rebuilt from upstream sources after the free catalog was withdrawn. Multi-arch for linux/amd64 and linux/arm64. Docs: https://github.com/firmansyahn/containers/blob/main/containers/keycloak/README.md

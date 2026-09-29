@@ -28,7 +28,7 @@ jobs:
       matrix: ${{ steps.branches.outputs.matrix }}
       latest: ${{ steps.branches.outputs.latest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: branches
         name: List containers/${{ inputs.app }}/*/debian-12
@@ -73,7 +73,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: meta
         name: Read version out of the Dockerfile
@@ -88,6 +88,17 @@ jobs:
           revision=$(grep -oP '\bIMAGE_REVISION="\K[^"]+' "$dockerfile")
           image="${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/${{ inputs.app }}"
 
+          # The one piece of per-package text a monorepo can differentiate: the
+          # README under it on the package page always comes from the repo root,
+          # because image.source takes a repo URL and not a subdirectory.
+          # Newlines are folded out — the annotation has to be a single line.
+          desc_file="containers/${{ inputs.app }}/description.txt"
+          [ -f "$desc_file" ] || { echo "::error::$desc_file is missing"; exit 1; }
+          description=$(tr '\n' ' ' < "$desc_file" | sed 's/  */ /g; s/ *$//')
+          [ -n "$description" ] || { echo "::error::$desc_file is empty"; exit 1; }
+          [ "${#description}" -le 512 ] || \
+            { echo "::error::description is ${#description} chars, GHCR caps it at 512"; exit 1; }
+
           tags="${image}:${app_version}-debian-12-r${revision}
           ${image}:${app_version}
           ${image}:${{ matrix.branch }}"
@@ -100,21 +111,22 @@ jobs:
             echo "context=$context"
             echo "image=$image"
             echo "app_version=$app_version"
+            echo "description=$description"
             echo "test_tag=${image}:ci-${{ github.run_id }}-${{ matrix.branch }}"
             echo "tags<<EOF"
             echo "$tags" | sed 's/^ *//'
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
       # Optional: avoids anonymous Docker Hub rate limits when pulling
       # bitnami/minideb. Set the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN
       # secret on the repo to enable; skipped entirely when they are absent.
       - name: Log in to Docker Hub
         if: vars.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -131,14 +143,14 @@ jobs:
       # outside Actions again; set the secret and it takes over.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build amd64 for smoke test
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ steps.meta.outputs.context }}
           platforms: linux/amd64
@@ -159,14 +171,29 @@ jobs:
 
       - name: Build and push ${{ env.PLATFORMS }}
         if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ steps.meta.outputs.context }}
           platforms: ${{ env.PLATFORMS }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # Links the GHCR package to this repo in the UI.
-          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Links the GHCR package to this repo in the UI. description and
+          # vendor are overrides: the upstream Dockerfiles label these
+          # "Application packaged by Broadcom, Inc." and vendor "Broadcom,
+          # Inc." — true of the tarball inside, wrong about who built and
+          # publishes the image, which is whoever owns this repo.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=${{ steps.meta.outputs.description }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+          # GHCR takes the package-page description from the *index*
+          # annotations, not from the per-arch labels above, so a multi-arch
+          # image shows no description at all unless it is set here as well.
+          # vendor rides along to keep both metadata planes saying the same
+          # thing, though nothing on the package page renders it.
+          annotations: |
+            index,manifest:org.opencontainers.image.description=${{ steps.meta.outputs.description }}
+            index,manifest:org.opencontainers.image.vendor=${{ github.repository_owner }}
           # Keep the manifest list a plain multi-arch index, like the images
           # this mirror replaces — no unknown/unknown attestation entries.
           provenance: false
@@ -183,3 +210,116 @@ jobs:
             echo '${{ steps.meta.outputs.tags }}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  prune:
+    name: prune orphaned ${{ inputs.app }} manifests
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    # One prune per package at a time: the reachable set is computed by reading
+    # the registry, so a concurrent run could see a half-pushed index.
+    concurrency: prune-${{ inputs.app }}
+    steps:
+      # Every tag is a multi-arch index, and GHCR lists that index's per-arch
+      # children as their own untagged versions. Re-pushing a moving tag like
+      # :latest or :8.6 leaves the old index and its children behind forever —
+      # 16 had piled up under redis before this job existed.
+      #
+      # So "untagged" is not the same as "unused": a child is still serving
+      # pulls for its architecture. Deleting untagged wholesale breaks
+      # `docker pull --platform` on tags that look perfectly healthy in the UI,
+      # and two indexes can share a child when only one arch was rebuilt.
+      # Reachability from a tag is the only safe test.
+      - name: Delete untagged manifests no tag points at
+        env:
+          # GITHUB_TOKEN cannot delete versions of a user-owned package, only
+          # org-owned ones. These are user-owned, so this needs the PAT; the
+          # job no-ops rather than failing the build when it is absent.
+          GHCR_PAT: ${{ secrets.GHCR_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          APP: ${{ inputs.app }}
+        run: |
+          set -u
+
+          if [ -z "$GHCR_PAT" ]; then
+            echo "::notice::GHCR_TOKEN not set — skipping prune (needs a PAT with delete:packages)"
+            exit 0
+          fi
+
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          repo=$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')
+          image="$owner/$repo/$APP"
+          pkg="$repo%2F$APP"
+          accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+
+          tok=$(curl -fsSL -u "$owner:$GHCR_PAT" \
+            "https://ghcr.io/token?scope=repository:$image:pull&service=ghcr.io" | jq -r '.token')
+          if [ -z "$tok" ] || [ "$tok" = "null" ]; then
+            echo "::error::no registry pull token for $image"; exit 1
+          fi
+
+          manifest() {
+            curl -fsSL -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+              "https://ghcr.io/v2/$image/manifests/$1"
+          }
+
+          keep=$(mktemp); orphans=$(mktemp)
+
+          # An unreadable tag means the walk is incomplete, and an incomplete
+          # reachable set deletes live images. Bail instead.
+          for t in $(curl -fsSL -H "Authorization: Bearer $tok" \
+                       "https://ghcr.io/v2/$image/tags/list" | jq -r '.tags[]?'); do
+            body=$(manifest "$t")
+            if [ -z "$body" ]; then
+              echo "::error::cannot read tag $t — aborting before deleting anything"; exit 1
+            fi
+            curl -fsSI -H "Authorization: Bearer $tok" -H "Accept: $accept" \
+              "https://ghcr.io/v2/$image/manifests/$t" \
+              | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}' >> "$keep"
+            echo "$body" | jq -r '.manifests[]?.digest' >> "$keep"
+          done
+          sort -u -o "$keep" "$keep"
+          echo "reachable from tags: $(wc -l < "$keep")"
+
+          versions=$(mktemp)
+          if ! gh api --paginate "users/$owner/packages/container/$pkg/versions?per_page=100" > "$versions"; then
+            echo "::error::cannot list versions of $repo/$APP"; exit 1
+          fi
+
+          jq -r '.[] | "\(.name) \(.id)"' "$versions" | while read -r dig id; do
+            grep -qxF "$dig" "$keep" || echo "$dig $id"
+          done > "$orphans"
+
+          total=$(wc -l < "$orphans")
+          if [ "$total" -eq 0 ]; then
+            echo "nothing to prune"; exit 0
+          fi
+
+          # Children first: if the run dies midway, a surviving index still
+          # resolves, whereas an index whose children went first does not.
+          leaves=''; indexes=''
+          while read -r dig id; do
+            if manifest "$dig" | jq -e 'has("manifests")' >/dev/null 2>&1; then
+              indexes="$indexes $id"
+            else
+              leaves="$leaves $id"
+            fi
+          done < "$orphans"
+
+          failed=0
+          for id in $leaves $indexes; do
+            if gh api -X DELETE "users/$owner/packages/container/$pkg/versions/$id" >/dev/null 2>&1; then
+              echo "  deleted $id"
+            else
+              echo "::warning::could not delete version $id"
+              failed=$((failed + 1))
+            fi
+          done
+
+          {
+            echo "### pruned $APP"
+            echo "$((total - failed)) of $total orphaned manifests deleted"
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
