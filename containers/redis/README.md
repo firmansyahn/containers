@@ -11,8 +11,8 @@ the shared [`build.yml`](../../.github/workflows/build.yml), to
 | 8.6 | [833b33f](https://github.com/bitnami/containers/tree/833b33f51295ac207ccb8427f60cfd212c0a5c11/bitnami/redis/8.6) (2026-05-23, last commit before removal) | `8.6.3-debian-12-r3`, `8.6.3`, `8.6` |
 | 8.2 | [e2bbf69](https://github.com/bitnami/containers/tree/e2bbf691c5625f086e44d3702e95ce1fb9d7d484/bitnami/redis/8.2) (2025-11-02, last commit before removal) | `8.2.3-debian-12-r0`, `8.2.3`, `8.2` |
 
-8.6 and 8.2 are the branches pegasus actually runs. Upstream had already stripped
-both directories, so they were recovered from git history — see the root
+8.6 and 8.2 are the branches still in production here. Upstream had already
+stripped both directories, so they were recovered from git history — see the root
 [README](../../README.md#adding-or-refreshing-a-version-branch).
 
 The `8.6.2` tag rescued from the CRI-O caches has **no build context**: upstream

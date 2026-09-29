@@ -16,9 +16,9 @@ here under `26.6`. That makes directory names an unreliable ordering, which is
 why the workflow picks the `:latest` branch by comparing `APP_VERSION` rather
 than directory name.
 
-26.6.1-r1 is the build behind the `keycloak:26.6.1` image that pegasus runs — the
-one that survived only in three nodes' CRI-O caches. It is now reproducible from
-source.
+26.6.1-r1 is the build behind the `keycloak:26.6.1` image still in production —
+the one that survived only in a few nodes' CRI-O caches. It is now reproducible
+from source.
 
 Images are multi-arch (`linux/amd64`, `linux/arm64`) and identical in layout to
 the Bitnami originals — same `/opt/bitnami` tree, same bundled JRE, same
