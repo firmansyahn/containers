@@ -177,18 +177,23 @@ jobs:
           platforms: ${{ env.PLATFORMS }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # Links the GHCR package to this repo in the UI. The description
-          # override matters because the upstream Dockerfiles label these
-          # "Application packaged by Broadcom, Inc." — true of the tarball
-          # inside, misleading about who built the image.
+          # Links the GHCR package to this repo in the UI. description and
+          # vendor are overrides: the upstream Dockerfiles label these
+          # "Application packaged by Broadcom, Inc." and vendor "Broadcom,
+          # Inc." — true of the tarball inside, wrong about who built and
+          # publishes the image, which is whoever owns this repo.
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=${{ steps.meta.outputs.description }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
           # GHCR takes the package-page description from the *index*
           # annotations, not from the per-arch labels above, so a multi-arch
           # image shows no description at all unless it is set here as well.
+          # vendor rides along to keep both metadata planes saying the same
+          # thing, though nothing on the package page renders it.
           annotations: |
             index,manifest:org.opencontainers.image.description=${{ steps.meta.outputs.description }}
+            index,manifest:org.opencontainers.image.vendor=${{ github.repository_owner }}
           # Keep the manifest list a plain multi-arch index, like the images
           # this mirror replaces — no unknown/unknown attestation entries.
           provenance: false
