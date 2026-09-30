@@ -44,7 +44,11 @@ over to the shared [`build.yml`](.github/workflows/build.yml), which:
   directory name — keycloak keeps 26.7.4 in a directory called `26` and older
   builds in `26.6` and `26.6.1`);
 - builds amd64 first, runs `containers/<app>/ci-smoke.sh` against it, and only
-  then builds both arches and pushes.
+  then builds both arches and pushes;
+- after publishing, deletes the untagged manifests that no tag reaches any more
+  — every re-push of a moving tag like `latest` orphans the old image. This
+  needs the `GHCR_TOKEN` secret and is skipped without it; see
+  [GHCR notes](#ghcr-notes).
 
 Pull requests build and smoke-test without pushing; pushes to `main` publish.
 `workflow_dispatch` takes an optional single branch to build.
@@ -87,6 +91,39 @@ Two things that are settings, not code, and cost an afternoon each if unknown:
   does not do it retroactively — so it is a click on each package's settings
   page, once.
 
-  Builds now push with plain `GITHUB_TOKEN`. The login falls back to a
-  `GHCR_TOKEN` secret (a classic PAT with `write:packages`) if one is ever set,
-  which is the escape hatch for a package created outside Actions again.
+  Pushing works with plain `GITHUB_TOKEN` now that the access is granted.
+  Pruning does not: **`GITHUB_TOKEN` cannot delete versions of a user-owned
+  package**, only an org-owned one. That is what the `GHCR_TOKEN` secret is
+  for. When it is set, both the push login and the prune job use it; when it
+  is absent, pushes fall back to `GITHUB_TOKEN` and prune is skipped with a
+  notice.
+
+### `GHCR_TOKEN`
+
+A **classic** personal access token. GitHub Packages does not accept
+fine-grained tokens, and classic tokens are the ones that offer
+**No expiration**. It needs exactly two scopes:
+
+| scope | used for |
+| ----- | -------- |
+| `write:packages` (includes `read:packages`) | pushing, and reading tags and package versions for prune |
+| `delete:packages` | prune's version deletes |
+
+Do not add `repo`: container packages have their own permissions, so nothing
+here needs it. The token page ticks `repo` automatically as soon as
+`write:packages` is ticked, so create the token from this link instead, which
+pre-selects just the two scopes:
+
+<https://github.com/settings/tokens/new?scopes=write:packages,delete:packages&description=containers%20GHCR_TOKEN>
+
+Store it as a repository secret. `gh` prompts for the value, so it stays out
+of shell history:
+
+```bash
+gh secret set GHCR_TOKEN -R firmansyahn/containers
+```
+
+A classic token covers every package on the account, not just this repo's,
+and anyone who can edit workflows on `main` can use it. Fork pull requests
+never receive secrets. Revoke it at <https://github.com/settings/tokens> if it
+is ever in doubt.
