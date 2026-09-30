@@ -1,0 +1,317 @@
+name: netbox
+
+# netbox does not go through the shared build.yml. That build assumes Bitnami's
+# layout, tags every image four ways, pushes the moving tags again on each run
+# and then prunes whatever those pushes orphaned. This image is pinned by
+# digest in production under a single tag, so here a published tag is never
+# pushed again and nothing is ever pruned.
+#
+# It also runs other people's code: the plugins' own test suites. So the work
+# is split in two. `build` builds the image and runs everything against it
+# with a token that can read this repo and nothing else. `push` builds
+# nothing and runs nothing from a plugin: it takes the image `build` tested,
+# as a file, and pushes that.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'containers/netbox/**'
+      - '.github/workflows/netbox.yml'
+  pull_request:
+    paths:
+      - 'containers/netbox/**'
+      - '.github/workflows/netbox.yml'
+  workflow_dispatch:
+
+# The default for every job. Only `push` asks for more.
+permissions:
+  contents: read
+
+# One run per ref at a time, so two pushes to main cannot both find the tag
+# absent and both push it. A run on main is never cancelled halfway.
+concurrency:
+  group: netbox-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Named, because the unnamed default is bash without pipefail, and a failing
+# script piped into tee would pass.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CONTEXT: containers/netbox/4.7
+  # The one architecture the image is built and tested for. A second one is a
+  # second build job on a runner of that architecture and an index in `push`,
+  # not a line here: what gets pushed has to be what was tested.
+  PLATFORM: linux/amd64
+  CI_IMAGE: netbox:ci
+
+jobs:
+  build:
+    name: build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Read the repo, nothing else: no write token, no secret, no registry
+    # login. The plugin suites run in this job.
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+      build_hash: ${{ steps.meta.outputs.build_hash }}
+      image_id: ${{ steps.build.outputs.image_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: meta
+        name: Read the tag and the labels out of the build files
+        run: |
+          set -euo pipefail
+          dockerfile="$CONTEXT/Dockerfile"
+          requirements="$CONTEXT/plugin_requirements.txt"
+
+          # The base by tag and digest. Its tag is the first half of ours, and
+          # a FROM without a digest would pull whatever the tag means today.
+          base=$(grep -m1 -oP '^FROM\s+\K\S+' "$dockerfile" || true)
+          if [[ ! "$base" =~ ^([^@]+):([^:@/]+)@(sha256:[0-9a-f]{64})$ ]]; then
+            echo "::error file=$dockerfile::FROM must name the base as name:tag@sha256:<digest>, found '$base'"
+            exit 1
+          fi
+          base_name="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+          base_tag="${BASH_REMATCH[2]}"
+          base_digest="${BASH_REMATCH[3]}"
+
+          revision=$(grep -oP '^ARG IMAGE_REVISION="\K[0-9]+(?=")' "$dockerfile" || true)
+          [ -n "$revision" ] || { echo "::error file=$dockerfile::no ARG IMAGE_REVISION=\"<n>\" line"; exit 1; }
+          tag="${base_tag}-r${revision}"
+
+          # The tag no longer says what is inside, so a label does: every
+          # name==version the requirements file pins.
+          packages=$(grep -oP '^[A-Za-z0-9][A-Za-z0-9._-]*==[^\s\\]+' "$requirements" | paste -sd' ' || true)
+          [ -n "$packages" ] || { echo "::error file=$requirements::no pinned package found"; exit 1; }
+
+          # What "the same image" means for a tag that is never pushed twice:
+          # every file of the build context, by name and content.
+          build_hash=$(cd "$CONTEXT" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/netbox"
+
+          # GHCR shows this under the package name. For a single-architecture
+          # image it reads the label; it has to be one line of at most 512.
+          desc_file=containers/netbox/description.txt
+          description=$(tr '\n' ' ' < "$desc_file" | sed 's/  */ /g; s/ *$//')
+          [ -n "$description" ] || { echo "::error::$desc_file is empty"; exit 1; }
+          [ "${#description}" -le 512 ] || \
+            { echo "::error::description is ${#description} chars, GHCR caps it at 512"; exit 1; }
+
+          {
+            echo "image=$image"
+            echo "tag=$tag"
+            echo "base_name=$base_name"
+            echo "base_digest=$base_digest"
+            echo "packages=$packages"
+            echo "build_hash=$build_hash"
+            echo "description=$description"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      # Asked before the build, and on pull requests too, so a change that
+      # forgot to raise IMAGE_REVISION fails here rather than after the merge.
+      # Without a credential: a package that is still private reads as absent,
+      # and `push` asks again with its token before it pushes anything.
+      - name: Is this tag on GHCR already?
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          BUILD_HASH: ${{ steps.meta.outputs.build_hash }}
+        run: containers/netbox/ci-published.sh
+
+      - id: build
+        name: Build ${{ env.PLATFORM }}
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          BASE_NAME: ${{ steps.meta.outputs.base_name }}
+          BASE_DIGEST: ${{ steps.meta.outputs.base_digest }}
+          PACKAGES: ${{ steps.meta.outputs.packages }}
+          BUILD_HASH: ${{ steps.meta.outputs.build_hash }}
+          DESCRIPTION: ${{ steps.meta.outputs.description }}
+        run: |
+          set -euo pipefail
+          repo_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          # The base image's labels come along with it. The ones that say who
+          # built the image, from what and where to read about it are
+          # overridden; netbox.*, the authors and the licence still describe
+          # the NetBox inside and stay.
+          #
+          # No provenance or SBOM attestation: the tag stays one plain image
+          # manifest, whose digest is the image and nothing else.
+          docker buildx build \
+            --platform "$PLATFORM" \
+            --pull --load --provenance=false --sbom=false --progress=plain \
+            --label "org.opencontainers.image.title=netbox" \
+            --label "org.opencontainers.image.description=${DESCRIPTION}" \
+            --label "org.opencontainers.image.vendor=${GITHUB_REPOSITORY_OWNER}" \
+            --label "org.opencontainers.image.url=${repo_url}/tree/main/containers/netbox" \
+            --label "org.opencontainers.image.documentation=${repo_url}/blob/main/containers/netbox/README.md" \
+            --label "org.opencontainers.image.source=${repo_url}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${TAG}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label "org.opencontainers.image.base.name=${BASE_NAME}" \
+            --label "org.opencontainers.image.base.digest=${BASE_DIGEST}" \
+            --label "io.github.firmansyahn.containers.packages=${PACKAGES}" \
+            --label "io.github.firmansyahn.containers.build-files=${BUILD_HASH}" \
+            --tag "$CI_IMAGE" \
+            "$CONTEXT"
+
+          # Taken now, before any code from a plugin has run in this job.
+          echo "image_id=$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        env:
+          IMAGE: ${{ env.CI_IMAGE }}
+          BUILD_HASH: ${{ steps.meta.outputs.build_hash }}
+        run: containers/netbox/ci-smoke.sh
+
+      - name: Plugin test suites
+        env:
+          IMAGE: ${{ env.CI_IMAGE }}
+        run: containers/netbox/ci-plugin-tests.sh
+
+      # The image goes to `push` as a file. Only where `push` will run: a pull
+      # request builds and tests and leaves nothing behind.
+      - name: Save the tested image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE_ID: ${{ steps.build.outputs.image_id }}
+        run: |
+          set -euo pipefail
+          now=$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")
+          [ "$now" = "$IMAGE_ID" ] || \
+            { echo "::error::$CI_IMAGE is $now, the build produced $IMAGE_ID"; exit 1; }
+          docker save "$CI_IMAGE" | gzip -1 > "$RUNNER_TEMP/netbox-image.tar.gz"
+          ls -l "$RUNNER_TEMP/netbox-image.tar.gz"
+
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          name: netbox-image
+          path: ${{ runner.temp }}/netbox-image.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  push:
+    name: push the tested image
+    needs: build
+    # Only main publishes: not a pull request, and not a manual run on a
+    # branch. Whoever can push to main decides what runs inside NetBox.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The workflow's own token. The package is created by this workflow, so
+    # that token can push to it; GHCR_TOKEN, which can delete packages, is not
+    # used anywhere in this file.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      TAG: ${{ needs.build.outputs.tag }}
+      BUILD_HASH: ${{ needs.build.outputs.build_hash }}
+      IMAGE_ID: ${{ needs.build.outputs.image_id }}
+    steps:
+      # One script of our own, and nothing else: no build context, no plugin.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: containers/netbox/ci-published.sh
+          sparse-checkout-cone-mode: false
+
+      # The answer that counts, with a credential, right before pushing.
+      # Absent: push. Published from these build files: end green, push
+      # nothing. Published from other build files: the script fails the job.
+      - id: published
+        name: Is this tag on GHCR already?
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/netbox/ci-published.sh | tee -a "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        if: steps.published.outputs.state == 'absent'
+        with:
+          name: netbox-image
+          path: ${{ runner.temp }}
+
+      - name: Load the image and check it is the one that was tested
+        if: steps.published.outputs.state == 'absent'
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/netbox-image.tar.gz" | docker load
+
+          label() { docker image inspect --format "{{ index .Config.Labels \"$1\" }}" "$CI_IMAGE"; }
+          loaded=$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")
+          [ "$loaded" = "$IMAGE_ID" ] || \
+            { echo "::error::loaded image is $loaded, the suites ran in $IMAGE_ID"; exit 1; }
+          [ "$(label org.opencontainers.image.version)" = "$TAG" ] || \
+            { echo "::error::loaded image is labelled '$(label org.opencontainers.image.version)', not $TAG"; exit 1; }
+          [ "$(label io.github.firmansyahn.containers.build-files)" = "$BUILD_HASH" ] || \
+            { echo "::error::loaded image was not built from the build files of this commit"; exit 1; }
+          echo "loaded $loaded, labelled $TAG"
+
+      - name: Push
+        if: steps.published.outputs.state == 'absent'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag "$CI_IMAGE" "$IMAGE:$TAG"
+          docker push "$IMAGE:$TAG"
+
+      - name: Read it back
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHED: ${{ steps.published.outputs.state == 'absent' }}
+        run: |
+          set -euo pipefail
+          back=$(containers/netbox/ci-published.sh)
+          echo "$back"
+          [[ "$back" == *state=same* ]] || { echo "::error::$IMAGE:$TAG is not on GHCR after all"; exit 1; }
+          digest=$(echo "$back" | sed -n 's/^digest=//p')
+          config=$(echo "$back" | sed -n 's/^config=//p')
+
+          # The image ID is the digest of the image's config with Docker's
+          # classic image store, and of its manifest with the containerd one.
+          # Either way, what is on GHCR has to carry it.
+          if [ "$PUSHED" = true ] && [ "$IMAGE_ID" != "$config" ] && [ "$IMAGE_ID" != "$digest" ]; then
+            echo "::error::GHCR has config $config in manifest $digest; the suites ran in $IMAGE_ID"
+            exit 1
+          fi
+
+          # Production pulls without a pull secret, and GHCR creates every
+          # package private. No API changes that: it is the Danger Zone on the
+          # package's settings page.
+          public=yes
+          if [[ "$(GHCR_USER='' GHCR_TOKEN='' containers/netbox/ci-published.sh 2>/dev/null)" != *state=same* ]]; then
+            public=no
+            echo "::warning::$IMAGE is not public: a pull without a credential fails. Make it public in the package settings before any cluster pulls it."
+          fi
+
+          {
+            echo "### netbox $TAG"
+            if [ "$PUSHED" = true ]; then
+              echo "Pushed. This is the image the smoke test and the plugin suites ran in."
+            else
+              echo "Already published from these build files. Nothing was pushed."
+            fi
+            echo '```'
+            echo "$IMAGE:$TAG@$digest"
+            echo '```'
+            echo "Pullable without a credential: $public"
+          } >> "$GITHUB_STEP_SUMMARY"

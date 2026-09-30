@@ -1,0 +1,23 @@
+# Everything the image adds to netbox-docker's virtual environment. Installed
+# with --no-deps and --require-hashes: a package a plugin depends on and the
+# base image lacks needs a line of its own here, and every line needs the
+# sha256 of its wheel on PyPI (the sdist is never used).
+#
+# Names are written the way `uv pip freeze` prints them — lower case, hyphens —
+# because the smoke test compares this file with that output.
+#
+# Changing anything here is a new IMAGE_REVISION in the Dockerfile, a new row
+# in the revision table of the root README, and, for a plugin, a matching line
+# in ../ci-plugin-tests.sh.
+
+netbox-routing==0.5.0 \
+    --hash=sha256:98022efab7c11b2a801187573a7f63253344d90f8f6a1b359ac307ba5dfec2df
+netbox-topology-views==4.7.0 \
+    --hash=sha256:060b3ece74318aab7646308ec8a48c7e72f985d66ac9b70361fa74fb74cd7dc9
+netbox-security==1.6.8 \
+    --hash=sha256:84cf35f06321046f9d9c1b67bbff798175a8aa2dc5681fc0e21e650492919ed1
+
+# Required by netbox-routing, which names it without a version. Its own
+# requirements, django and typing-extensions, are already in the base image.
+django-polymorphic==4.11.7 \
+    --hash=sha256:23ee903f79b9c4ebd36fee952f955d80c3d51f3eee9fa23639c4bafe3be616a2

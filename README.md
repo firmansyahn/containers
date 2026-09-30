@@ -6,13 +6,14 @@ deleted outright, `docker.io/bitnami/*` keeps only `latest`-style development
 tags, `bitnamilegacy/*` is frozen at the August 2025 cutoff, and
 `bitnamisecure/*` needs a paid subscription.
 
-Images are published to `ghcr.io/firmansyahn/containers/<app>`, multi-arch for
-`linux/amd64` and `linux/arm64`.
+Images are published to `ghcr.io/firmansyahn/containers/<app>`. The mirrors are
+multi-arch for `linux/amd64` and `linux/arm64`.
 
 | app | branches | source |
 | --- | -------- | ------ |
 | [redis](containers/redis) | 8.10, 8.6, 8.2 | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/redis) |
 | [keycloak](containers/keycloak) | 26 (26.7.4), 26.6 (26.6.4), 26.6.1 | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/keycloak) |
+| [netbox](containers/netbox) | 4.7 (`v4.7.1-5.1.1-r0`) | **derived, not a mirror**: [netbox-docker](https://github.com/netbox-community/netbox-docker) plus pinned plugins from PyPI — see [netbox](#netbox) |
 
 ## Layout
 
@@ -30,7 +31,7 @@ README. It is written as an index **annotation** rather than only a label —
 GHCR reads the description of a multi-arch image from the index, and ignores
 the per-architecture labels.
 
-Nothing about an app is configured in the workflow. Each app has a thin caller
+Nothing about a mirror is configured in the workflow. Each one has a thin caller
 workflow (`.github/workflows/<app>.yml`) that owns the path filters and hands
 over to the shared [`build.yml`](.github/workflows/build.yml), which:
 
@@ -52,6 +53,8 @@ over to the shared [`build.yml`](.github/workflows/build.yml), which:
 
 Pull requests build and smoke-test without pushing; pushes to `main` publish.
 `workflow_dispatch` takes an optional single branch to build.
+
+[netbox](#netbox) is the one app that does not go through `build.yml`.
 
 ## Adding or refreshing a version branch
 
@@ -76,6 +79,36 @@ sha256 files in `prebuildfs/opt/bitnami/checksums/`. That host still serves old
 versions even though the matching image tags are gone — it and
 `docker.io/bitnami/minideb:bookworm` are the only external dependencies here, so
 check both before assuming an old version can still be rebuilt.
+
+## netbox
+
+`ghcr.io/firmansyahn/containers/netbox` is not a mirror. It is the
+[netbox-docker](https://github.com/netbox-community/netbox-docker) image, named
+by digest, plus one layer of plugin packages pinned by version and hash. No
+plugin is on as shipped. How it is built, tested and changed is in
+[containers/netbox](containers/netbox/README.md); what differs from the mirrors
+is that it has its own workflow, [`netbox.yml`](.github/workflows/netbox.yml):
+
+- **One tag per build, `<netbox-docker tag>-r<revision>`, never pushed twice and
+  never pruned.** Production pins the digest. The shared build pushes moving
+  tags again and then deletes the manifests that orphans — which, for an image
+  pinned by digest, deletes the one in use.
+- **The build that was tested is the build that is pushed**, as a file handed
+  from one job to the next. The job that builds it also runs the plugins' own
+  test suites, so it holds no write token and no secret; the job that pushes
+  runs nothing from a plugin and uses the workflow's own token, not
+  `GHCR_TOKEN`.
+- **`linux/amd64` only**, for the same reason: one runner tests one architecture.
+
+### netbox revisions
+
+The tag does not say what is inside, so this table does. A row is added in the
+commit that raises `IMAGE_REVISION`; the same list is in each image's
+`io.github.firmansyahn.containers.packages` label.
+
+| tag | base | netbox-routing | netbox-topology-views | netbox-security | also added | added |
+| --- | ---- | -------------- | --------------------- | --------------- | ---------- | ----- |
+| `v4.7.1-5.1.1-r0` | `netboxcommunity/netbox:v4.7.1-5.1.1` at `sha256:59e3e595…11e74` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-09-30 |
 
 ## GHCR notes
 
