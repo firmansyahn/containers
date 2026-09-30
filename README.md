@@ -38,7 +38,8 @@ over to the shared [`build.yml`](.github/workflows/build.yml), which:
   branch builds with no workflow edit;
 - reads `APP_VERSION` and `IMAGE_REVISION` out of each Dockerfile, so tags can
   never drift from the tarball the build actually pulls;
-- tags `<version>-debian-12-r<revision>`, `<version>` and `<branch>`, plus
+- tags `<version>-debian-12-r<revision>`, `<version>` and `<branch>` (the last
+  two are one tag when a branch is named after its exact version), plus
   `latest` for the branch with the **highest `APP_VERSION`** (not the highest
   directory name — keycloak keeps 26.7.4 in a directory called `26` and an older
   pinned build in `26.6`);
