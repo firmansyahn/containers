@@ -7,7 +7,7 @@ calls the shared [`build.yml`](../../.github/workflows/build.yml), to
 
 | branch | upstream commit | published tags |
 | ------ | --------------- | -------------- |
-| 26 | [c62f41a](https://github.com/bitnami/containers/tree/c62f41af66f777c7d6bfe232bff806a41f330791/bitnami/keycloak/26) (2026-09-19, still on `main`) | `26.7.4-debian-12-r0`, `26.7.4`, `26`, `latest` |
+| 26 | [b0d8c5e](https://github.com/bitnami/containers/tree/b0d8c5e131de56611a01342058814ed838984a80/bitnami/keycloak/26) (2026-09-29, still on `main`) | `26.7.4-debian-12-r1`, `26.7.4`, `26`, `latest` |
 | 26.6 | [c35c493](https://github.com/bitnami/containers/tree/c35c493ebfbf4ec9b84189c226aa88bde38e2d84/bitnami/keycloak/26) (2026-04-29) | `26.6.1-debian-12-r1`, `26.6.1`, `26.6` |
 
 Upstream keeps a single `26` directory and rolls it forward in place, so the
