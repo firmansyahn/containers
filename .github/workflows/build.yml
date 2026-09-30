@@ -41,7 +41,7 @@ jobs:
 
           # :latest follows the highest APP_VERSION, not the highest directory
           # name — keycloak keeps its newest release in a branch called "26"
-          # while an older pinned one sits in "26.6".
+          # while older ones sit in "26.6" and "26.6.1".
           latest_branch=''; latest_version=''
           while read -r b; do
             v=$(grep -oP '\bAPP_VERSION="\K[^"]+' "containers/$app/$b/debian-12/Dockerfile")
