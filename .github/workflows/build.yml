@@ -41,7 +41,7 @@ jobs:
 
           # :latest follows the highest APP_VERSION, not the highest directory
           # name — keycloak keeps its newest release in a branch called "26"
-          # while an older pinned one sits in "26.6".
+          # while older ones sit in "26.6" and "26.6.1".
           latest_branch=''; latest_version=''
           while read -r b; do
             v=$(grep -oP '\bAPP_VERSION="\K[^"]+' "containers/$app/$b/debian-12/Dockerfile")
@@ -100,8 +100,13 @@ jobs:
             { echo "::error::description is ${#description} chars, GHCR caps it at 512"; exit 1; }
 
           tags="${image}:${app_version}-debian-12-r${revision}
-          ${image}:${app_version}
+          ${image}:${app_version}"
+          # A branch pinned to one exact patch (keycloak "26.6.1") is named
+          # after its version, so its branch tag is already in the list.
+          if [ '${{ matrix.branch }}' != "$app_version" ]; then
+            tags="${tags}
           ${image}:${{ matrix.branch }}"
+          fi
           if [ '${{ matrix.branch }}' = '${{ needs.discover.outputs.latest }}' ]; then
             tags="${tags}
           ${image}:latest"

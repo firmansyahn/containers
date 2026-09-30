@@ -12,7 +12,7 @@ Images are published to `ghcr.io/firmansyahn/containers/<app>`, multi-arch for
 | app | branches | source |
 | --- | -------- | ------ |
 | [redis](containers/redis) | 8.10, 8.6, 8.2 | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/redis) |
-| [keycloak](containers/keycloak) | 26 (26.7.4), 26.6 (26.6.1) | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/keycloak) |
+| [keycloak](containers/keycloak) | 26 (26.7.4), 26.6 (26.6.4), 26.6.1 | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/keycloak) |
 
 ## Layout
 
@@ -38,10 +38,11 @@ over to the shared [`build.yml`](.github/workflows/build.yml), which:
   branch builds with no workflow edit;
 - reads `APP_VERSION` and `IMAGE_REVISION` out of each Dockerfile, so tags can
   never drift from the tarball the build actually pulls;
-- tags `<version>-debian-12-r<revision>`, `<version>` and `<branch>`, plus
+- tags `<version>-debian-12-r<revision>`, `<version>` and `<branch>` (the last
+  two are one tag when a branch is named after its exact version), plus
   `latest` for the branch with the **highest `APP_VERSION`** (not the highest
-  directory name — keycloak keeps 26.7.4 in a directory called `26` and an older
-  pinned build in `26.6`);
+  directory name — keycloak keeps 26.7.4 in a directory called `26` and older
+  builds in `26.6` and `26.6.1`);
 - builds amd64 first, runs `containers/<app>/ci-smoke.sh` against it, and only
   then builds both arches and pushes.
 
