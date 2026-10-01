@@ -1,0 +1,2 @@
+Startechnica containers ship with software bundles. You can find the licenses under:
+/opt/startechnica/[name-of-bundle]/licenses/[bundle-version].txt

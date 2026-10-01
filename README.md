@@ -12,11 +12,15 @@ in that app's own README, which its package description links to.
 | [redis](containers/redis/README.md) | mirror |
 | [keycloak](containers/keycloak/README.md) | mirror |
 | [netbox](containers/netbox/README.md) | derived |
+| [vip-manager](containers/vip-manager/README.md) | packaged |
 
 - A **[mirror](#mirrors)** rebuilds an upstream image that is no longer
   published, from upstream's own build files copied into this repo.
 - A **[derived](#derived-images)** image is an upstream image, named by digest,
   plus a layer of our own.
+- A **[packaged](#packaged-images)** image has no upstream image at all. It is
+  built here from upstream's release tarball, the way the mirrors are, from
+  build files this repo maintains.
 
 ## Layout
 
@@ -24,7 +28,7 @@ in that app's own README, which its package description links to.
 containers/<app>/README.md         # what the image is, its versions, its tests
 containers/<app>/description.txt   # GHCR package-page description
 containers/<app>/ci-smoke.sh       # test run against every build
-containers/<app>/<branch>/         # build context (a mirror's is <branch>/<os flavour>/)
+containers/<app>/<branch>/         # build context (<branch>/<os flavour>/ for build.yml)
 .github/workflows/<app>.yml        # path filters, then the build
 ```
 
@@ -34,7 +38,8 @@ renders underneath is always this root one, for every package, because
 each file spends part of its 512-character budget linking to that app's own
 README. A multi-arch image carries it as an index **annotation** as well as a
 label, because GHCR reads the description of a multi-arch image from the index
-and ignores the per-architecture labels.
+and ignores the per-architecture labels. A single-architecture image has no
+index, so GHCR reads its label.
 
 ## What every image goes through
 
@@ -48,7 +53,8 @@ and ignores the per-architecture labels.
   raised. A digest therefore stays valid as long as its revision tag exists,
   and production can pin it.
 - Each workflow runs only for changes under its own `containers/<app>/`, its
-  own workflow file, `ci-published.sh` and, for a mirror, `build.yml`.
+  own workflow file, `ci-published.sh` and, for a mirror or a packaged image,
+  `build.yml`.
 
 ## Mirrors
 
@@ -64,21 +70,27 @@ Nothing about a mirror is configured in the workflow. Each one has a thin caller
 workflow that owns the path filters and hands over to the shared
 [`build.yml`](.github/workflows/build.yml), which:
 
-- discovers every `containers/<app>/*/debian-12` directory at run time, so a new
-  branch builds with no workflow edit;
+- discovers every `containers/<app>/<branch>/debian-*` directory at run time,
+  one per branch, so a new branch builds with no workflow edit;
 - reads `APP_VERSION` and `IMAGE_REVISION` out of each Dockerfile, so tags can
   never drift from the tarball the build actually pulls;
-- tags `<version>-debian-12-r<revision>`, `<version>` and `<branch>` (the last
-  two are one tag when a branch is named after its exact version), plus
-  `latest` for the branch with the **highest `APP_VERSION`**, not the highest
-  directory name: upstream may keep its newest release in a directory named
-  for the major version and older ones in directories named for a minor;
+- tags `<version>-<os flavour>-r<revision>` (`debian-12` for every mirror),
+  `<version>` and `<branch>` (the last two are one tag when a branch is named
+  after its exact version), plus `latest` for the branch with the **highest
+  `APP_VERSION`**, not the highest directory name: upstream may keep its newest
+  release in a directory named for the major version and older ones in
+  directories named for a minor;
 - on `main`, skips every branch whose revision tag is already published, so the
   moving tags only move when a new revision is pushed. The hash leaves out
   `docker-compose.yml`, which is not part of the image;
 - otherwise builds amd64 first, runs `ci-smoke.sh` against it, and only then
-  builds both arches and pushes all of the branch's tags. Pull requests build
-  and smoke-test every branch, published or not;
+  builds the app's platforms and pushes all of the branch's tags. A caller
+  workflow may name the platforms; one that does not gets `linux/amd64` and
+  `linux/arm64`. Pull requests build and smoke-test every branch, published or
+  not;
+- after publishing, warns when the image cannot be pulled without a
+  credential. GHCR creates every package private, and only its settings page
+  makes one public;
 - after publishing, deletes the untagged manifests that no tag reaches any more.
   A published image keeps its revision tag, so this only removes what is left
   untagged some other way, such as the images re-pushes orphaned before
@@ -119,6 +131,23 @@ versions even though the matching image tags are gone — it and
 `docker.io/bitnami/minideb:bookworm` are the only external dependencies of a
 mirror, so check both before assuming an old version can still be rebuilt.
 
+## Packaged images
+
+A packaged image has no upstream image to rebuild: upstream publishes release
+tarballs or packages only, and Bitnami never packaged it. So it is built here,
+the way the mirrors are, and this repo maintains its build files:
+
+- upstream's release tarball, checked against a sha256 recorded in this repo,
+  on a `minideb` base. Nothing is compiled;
+- Bitnami's shared shell library and conventions (entrypoint, `run.sh`, banner,
+  log format), copied from the mirrors and rebranded by a script in the app's
+  directory: everything lives under `/opt/startechnica`, the library is
+  `libstartechnica.sh`, and the switches are `STARTECHNICA_*`;
+- the same `build.yml`, tags and revision rule as the mirrors. Its caller
+  workflow may name its platforms, and its build context may be on a newer
+  Debian than the mirrors' `debian-12`; its revision tags then name that one.
+  vip-manager is built for `linux/amd64` only, on `debian-13`.
+
 ## Derived images
 
 A derived image has its own workflow instead of `build.yml`, because it is
@@ -153,5 +182,11 @@ limitations under the License.
 
 A mirror's build files, and the parts of its README taken from upstream, are
 Bitnami's: Copyright Broadcom, Inc., under the same license, as their file
-headers say. The images themselves contain third-party software under its own
-licenses.
+headers say.
+
+A packaged image's build files are Copyright Startechnica, under the same
+license. The shared shell library and apt helpers it carries, and the scripts
+derived from Bitnami's, are also Copyright Broadcom, Inc., and were modified by
+Startechnica, as their file headers say.
+
+The images themselves contain third-party software under its own licenses.
