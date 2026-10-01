@@ -21,8 +21,7 @@ plugin on are two separate changes.
 `<netbox-docker tag>-r<revision>`, for example `v4.7.1-5.1.1-r0`. The revision
 is `IMAGE_REVISION` in the Dockerfile: it goes up by one whenever anything in
 the version directory changes on the same base, and a new base starts again at
-`r0`. The [revision table](../../README.md#netbox-revisions) in the root README
-says what each one holds.
+`r0`. The [revision table](#revisions) says what each one holds.
 
 - **A published tag is never pushed again, and nothing is pruned.** Production
   pins the image by digest. A rebuild under the same tag would leave that
@@ -57,6 +56,18 @@ cat /opt/netbox/plugin_requirements.txt
 | `org.opencontainers.image.base.name`, `.base.digest` | the netbox-docker image it was built on |
 | `org.opencontainers.image.source`, `.revision` | this repo, and the commit it was built from |
 
+## Revisions
+
+The tag does not say what is inside, so this table does. A row is added in the
+commit that makes a new tag; the same list is in each image's
+`io.github.firmansyahn.containers.packages` label. Every tag here stays
+published.
+
+| tag | base | netbox-routing | netbox-topology-views | netbox-security | also added | added |
+| --- | ---- | -------------- | --------------------- | --------------- | ---------- | ----- |
+| `v4.7.1-5.1.1-r0` | `netboxcommunity/netbox:v4.7.1-5.1.1` at `sha256:59e3e595…11e74` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-09-30 |
+| `v4.7.2-5.1.1-r0` | `netboxcommunity/netbox:v4.7.2-5.1.1` at `sha256:ad038bdb…33066` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-10-01 |
+
 ## Changing it
 
 One version directory at a time. Everything below is one commit.
@@ -73,7 +84,7 @@ One version directory at a time. Everything below is one commit.
    in `NO_SUITE` (why not). The script refuses a package that is in neither.
 4. If the plugin ships static files, add it to the `PLUGINS` line the
    Dockerfile writes for `collectstatic`. The smoke test fails until it is.
-5. Add a row to the [revision table](../../README.md#netbox-revisions).
+5. Add a row to the [revision table](#revisions).
 
 **Move to a new NetBox**
 
