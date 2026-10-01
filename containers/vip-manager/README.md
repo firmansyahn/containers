@@ -19,8 +19,8 @@ It is built for `linux/amd64` only, and published to `ghcr.io/firmansyahn/contai
 
 | branch | vip-manager | upstream release | published tags |
 | ------ | ----------- | ---------------- | -------------- |
-| 5 | 5.0.0 | [v5.0.0](https://github.com/cybertec-postgresql/vip-manager/releases/tag/v5.0.0) (2026-07-30) | not published yet |
-| 4 | 4.2.0 | [v4.2.0](https://github.com/cybertec-postgresql/vip-manager/releases/tag/v4.2.0) (2026-04-29) | not published yet |
+| 5 | 5.0.0 | [v5.0.0](https://github.com/cybertec-postgresql/vip-manager/releases/tag/v5.0.0) (2026-07-30) | `5.0.0-debian-13-r0`, `5.0.0`, `5`, `latest` |
+| 4 | 4.2.0 | [v4.2.0](https://github.com/cybertec-postgresql/vip-manager/releases/tag/v4.2.0) (2026-04-29) | `4.2.0-debian-13-r0`, `4.2.0`, `4` |
 
 ### Which branch
 
@@ -135,6 +135,26 @@ These change only the image's own scripts, not vip-manager:
 curl -fsS --cacert /certs/ca.crt --cert /certs/client.crt --key /certs/client.key https://192.0.2.2:2379/health
 ```
 
+## Stopping
+
+vip-manager releases the VIP only when it gets SIGINT: it removes the VIP, then exits. `docker stop` and `podman stop` send SIGTERM, which ends vip-manager and leaves the VIP on the interface. Upstream chose this on purpose ([#7](https://github.com/cybertec-postgresql/vip-manager/issues/7), [#19](https://github.com/cybertec-postgresql/vip-manager/issues/19)), so that vip-manager can be restarted or upgraded without moving the VIP. This image keeps it: it sets no `STOPSIGNAL`.
+
+Each choice has a cost:
+
+| stopped with | on the leader | if the leader moves while it is stopped | if the container is removed for good |
+| ------------ | ------------- | --------------------------------------- | ------------------------------------ |
+| SIGTERM (the default) | the VIP stays, and writes through it go on | two nodes hold the VIP until vip-manager starts again on the old one | the VIP stays, and nothing will remove it |
+| SIGINT | the VIP goes, and writes through it stop until vip-manager starts again | the new leader alone holds the VIP | the VIP goes with it |
+
+When two nodes hold the VIP, Patroni has already demoted the old leader, so writes that reach it fail as read-only: the VIP is unreliable, but the data does not split. A crash, or `docker kill` with its default SIGKILL, leaves the VIP as SIGTERM does.
+
+When vip-manager starts again, it removes a VIP this node should not hold. On the leader it may also remove the VIP for a moment, before its first answer from the DCS puts it back.
+
+To release the VIP:
+
+- once: `docker stop --signal SIGINT vip-manager` (Docker 23 or later), or `podman kill --signal SIGINT vip-manager`;
+- on every stop: `stop_signal: SIGINT` in compose, `--stop-signal SIGINT` with `docker run`, or `PodmanArgs=--stop-signal SIGINT` in a Quadlet.
+
 ## Switching from a locally built vip-manager
 
 What a deployment that builds vip-manager on each node, such as the patroni role in [startechnica/ansible-collection-infra](https://github.com/startechnica/ansible-collection-infra), changes to use this image:
@@ -146,6 +166,7 @@ What a deployment that builds vip-manager on each node, such as the patroni role
 - Give the etcd client key mode `0440` instead of `0400`, still owned by `root:root`. The container runs as uid 1001 with group 0, so vip-manager reads the key through its group, and so does a `curl` healthcheck run in the container. With `0400`, neither can. The fallback is to run the container as root.
 - Keep `NET_ADMIN`, `NET_RAW` and host networking. Do not enable `no-new-privileges` while running as uid 1001.
 - A `curl` healthcheck against etcd `/health` keeps working.
+- Keep the default stop signal, SIGTERM, for restarts and upgrades: the VIP stays, as it does with a locally built vip-manager today. But release it with SIGINT before removing vip-manager from a node, or stopping it for longer than a restart, and never leave vip-manager stopped while the leader may move. For maintenance on the leader, switch over first. To release the VIP on every stop instead, set the stop signal to SIGINT. See [Stopping](#stopping).
 
 ## Tags
 
@@ -160,6 +181,7 @@ A `-r<revision>` tag is pushed once and never again, so its digest stays valid: 
 - the version vip-manager reports matches `APP_VERSION`;
 - the banner names startechnica, `STARTECHNICA_DEBUG` works, and nothing in the image still refers to the Bitnami layout;
 - as uid 1001, with a client key owned by `root:root` with mode `0440`, vip-manager adds the VIP when the leader key names this node, a gratuitous ARP for it is seen on the interface, and the VIP is removed when the key moves to another node;
+- `docker stop` (SIGTERM) leaves the VIP in place, and SIGINT removes it, as upstream intends;
 - as uid 1001, a key with mode `0400` owned by root cannot be read, and vip-manager exits;
 - without `NET_ADMIN`, or under `no-new-privileges`, the container exits at startup and says why;
 - with no configuration at all, vip-manager names the missing setting, not a missing config file;

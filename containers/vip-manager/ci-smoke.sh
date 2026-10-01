@@ -177,6 +177,35 @@ wait_vip absent || fail "the VIP stayed when $key moved to another node"
 docker rm -f "$id-vip" >/dev/null
 pass "as uid 1001 under Docker, with a 0440 root:root key, the VIP was added, announced and removed"
 
+# --- stopping: SIGTERM keeps the VIP, SIGINT releases it ---------------------
+
+# vip-manager handles SIGINT only, by removing the VIP and exiting. SIGTERM,
+# which docker stop sends, ends it with the VIP left in place, so it can be
+# restarted or upgraded without moving the VIP (upstream #7, #19). The image
+# sets no STOPSIGNAL; this pins both, so a change upstream shows up here.
+docker run -d --name "$id-stop" "${in_ns[@]}" "${caps[@]}" "${env[@]}" \
+  -e VIP_ETCD_KEY_FILE=/certs/client.key "$IMAGE" >/dev/null
+wait_running "$id-stop" || fail "vip-manager never started for the stop test"
+etcdctl put "$key" "$me" >/dev/null
+wait_vip present || fail "the VIP never appeared for the stop test"
+docker stop "$id-stop" >/dev/null
+has_vip || fail "docker stop (SIGTERM) removed the VIP: upstream's stop handling has changed, see README.md#stopping"
+docker rm -f "$id-stop" >/dev/null
+
+# A fresh vip-manager may drop the VIP it finds at startup, before etcd's first
+# answer puts it back, so SIGINT waits for that answer.
+docker run -d --name "$id-sigint" "${in_ns[@]}" "${caps[@]}" "${env[@]}" \
+  -e VIP_ETCD_KEY_FILE=/certs/client.key "$IMAGE" >/dev/null
+for _ in $(seq 40); do docker logs "$id-sigint" 2>&1 | grep -q 'must be up' && break; sleep 0.5; done
+docker logs "$id-sigint" 2>&1 | grep -q 'must be up' || fail "vip-manager never saw $key name this node"
+wait_vip present || fail "the VIP never came back before SIGINT"
+docker kill --signal SIGINT "$id-sigint" >/dev/null
+wait_vip absent || fail "SIGINT left the VIP in place"
+timeout 30 docker wait "$id-sigint" >/dev/null || fail "vip-manager did not exit on SIGINT"
+docker rm -f "$id-sigint" >/dev/null
+etcdctl put "$key" "$other" >/dev/null
+pass "docker stop (SIGTERM) keeps the VIP, and SIGINT releases it"
+
 # --- uid 1001 cannot read a key only root can read ---------------------------
 
 out=$(timeout 60 docker run --rm "${in_ns[@]}" "${caps[@]}" "${env[@]}" \
