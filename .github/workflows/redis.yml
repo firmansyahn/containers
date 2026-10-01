@@ -7,11 +7,13 @@ on:
       - 'containers/redis/**'
       - '.github/workflows/redis.yml'
       - '.github/workflows/build.yml'
+      - '.github/scripts/ci-published.sh'
   pull_request:
     paths:
       - 'containers/redis/**'
       - '.github/workflows/redis.yml'
       - '.github/workflows/build.yml'
+      - '.github/scripts/ci-published.sh'
   workflow_dispatch:
     inputs:
       branch:

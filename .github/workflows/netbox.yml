@@ -1,10 +1,10 @@
 name: netbox
 
 # netbox does not go through the shared build.yml. That build assumes Bitnami's
-# layout, tags every image four ways, pushes the moving tags again on each run
-# and then prunes whatever those pushes orphaned. This image is pinned by
-# digest in production under a single tag, so here a published tag is never
-# pushed again and nothing is ever pruned.
+# layout and two architectures, gives every image moving tags besides its
+# revision tag, and prunes what is left untagged. This image has one tag per
+# build and is pinned by digest in production: a published tag is never pushed
+# again, and nothing is ever pruned.
 #
 # It also runs other people's code: the plugins' own test suites. So the work
 # is split in two. `build` builds the image and runs everything against it
@@ -17,10 +17,12 @@ on:
     paths:
       - 'containers/netbox/**'
       - '.github/workflows/netbox.yml'
+      - '.github/scripts/ci-published.sh'
   pull_request:
     paths:
       - 'containers/netbox/**'
       - '.github/workflows/netbox.yml'
+      - '.github/scripts/ci-published.sh'
   workflow_dispatch:
 
 # The default for every job. Only `push` asks for more.
@@ -126,7 +128,7 @@ jobs:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAG: ${{ steps.meta.outputs.tag }}
           BUILD_HASH: ${{ steps.meta.outputs.build_hash }}
-        run: containers/netbox/ci-published.sh
+        run: .github/scripts/ci-published.sh
 
       - id: build
         name: Build ${{ env.PLATFORM }}
@@ -228,7 +230,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-          sparse-checkout: containers/netbox/ci-published.sh
+          sparse-checkout: .github/scripts/ci-published.sh
           sparse-checkout-cone-mode: false
 
       # The answer that counts, with a credential, right before pushing.
@@ -239,7 +241,7 @@ jobs:
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: containers/netbox/ci-published.sh | tee -a "$GITHUB_OUTPUT"
+        run: .github/scripts/ci-published.sh | tee -a "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v8
         if: steps.published.outputs.state == 'absent'
@@ -280,7 +282,7 @@ jobs:
           PUSHED: ${{ steps.published.outputs.state == 'absent' }}
         run: |
           set -euo pipefail
-          back=$(containers/netbox/ci-published.sh)
+          back=$(.github/scripts/ci-published.sh)
           echo "$back"
           [[ "$back" == *state=same* ]] || { echo "::error::$IMAGE:$TAG is not on GHCR after all"; exit 1; }
           digest=$(echo "$back" | sed -n 's/^digest=//p')
@@ -298,7 +300,7 @@ jobs:
           # package private. No API changes that: it is the Danger Zone on the
           # package's settings page.
           public=yes
-          if [[ "$(GHCR_USER='' GHCR_TOKEN='' containers/netbox/ci-published.sh 2>/dev/null)" != *state=same* ]]; then
+          if [[ "$(GHCR_USER='' GHCR_TOKEN='' .github/scripts/ci-published.sh 2>/dev/null)" != *state=same* ]]; then
             public=no
             echo "::warning::$IMAGE is not public: a pull without a credential fails. Make it public in the package settings before any cluster pulls it."
           fi
