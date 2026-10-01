@@ -24,6 +24,13 @@
 # anonymously, which only a public package answers; a private one reads as
 # absent. The job that pushes asks again with its token, and that answer is the
 # one that counts.
+#
+# So with a token, only a 404 means absent: GHCR answers 404 for a missing tag
+# or package. A token that is refused, or that gets 401 or 403 for the tag, is
+# looking at a package it cannot read, and the script fails rather than answer
+# absent: the job would push the revision tag again over a published one. That
+# is a package created outside this repo's Actions, such as by GHCR_TOKEN, that
+# does not list the repo under Manage Actions access in its settings.
 set -euo pipefail
 
 : "${IMAGE:?IMAGE not set}"
@@ -43,11 +50,18 @@ if [ -n "${GHCR_TOKEN:-}" ]; then
   auth=(-u "${GHCR_USER:?GHCR_USER not set}:${GHCR_TOKEN}")
 fi
 
-# A registry that will not hand out a pull token is saying the same thing as a
-# 404 on the manifest: not there, or not for us.
+no_access() {
+  echo "::error::the token given cannot read $IMAGE ($1). If the package exists, add this repo under Manage Actions access in its settings. Reading this as absent would push $TAG again." >&2
+  exit 1
+}
+
+# Anonymously, a registry that will not hand out a pull token is saying the
+# same thing as a 404 on the manifest: not there, or not for us. With a token,
+# it is refusing the token.
 tok=$(curl -sS "${auth[@]}" "https://$registry/token?scope=repository:$path:pull&service=$registry" \
   | jq -r '.token // empty' 2>/dev/null) || tok=''
 if [ -z "$tok" ]; then
+  [ "${#auth[@]}" -eq 0 ] || no_access "no pull token"
   echo "no pull token for $IMAGE — reading it as absent" >&2
   echo "state=absent"
   exit 0
@@ -65,6 +79,7 @@ code=$(manifest "$TAG")
 case "$code" in
   200) ;;
   401|403|404)
+    [ "$code" = 404 ] || [ "${#auth[@]}" -eq 0 ] || no_access "$TAG answered $code"
     echo "$IMAGE:$TAG answered $code — absent" >&2
     echo "state=absent"
     exit 0
