@@ -1,0 +1,26 @@
+# Copyright Startechnica. All Rights Reserved.
+# SPDX-License-Identifier: APACHE-2.0
+
+# vip-manager moves a VIP on the host's own interface, so it needs host
+# networking and two capabilities. Do not add no-new-privileges: running as
+# uid 1001, the image gets those capabilities through a file capability, which
+# no-new-privileges cancels.
+services:
+  vip-manager:
+    image: ghcr.io/firmansyahn/containers/vip-manager:4
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - VIP_IP=192.0.2.10
+      - VIP_NETMASK=24
+      - VIP_INTERFACE=eth0
+      - VIP_TRIGGER_KEY=/service/pgcluster/leader
+      - VIP_TRIGGER_VALUE=pgcluster-member1
+      - VIP_DCS_TYPE=etcd
+      - VIP_DCS_ENDPOINTS=http://192.0.2.2:2379
+    # Instead of, or as well as, the variables above (they take precedence):
+    # volumes:
+    #   - ./vip-manager.yml:/etc/default/vip-manager.yml:ro
+    restart: unless-stopped
