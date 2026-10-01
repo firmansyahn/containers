@@ -40,9 +40,15 @@ and ignores the per-architecture labels.
 
 - Pull requests build and test, and push nothing. A push to `main` publishes.
 - Every build passes the app's `ci-smoke.sh` before anything is pushed.
+- **A revision tag is pushed once.** Each image is labelled
+  `io.github.firmansyahn.containers.build-files` with a hash of its build
+  files, and [`ci-published.sh`](.github/scripts/ci-published.sh) checks the
+  tag before every push: already published from the same files, nothing is
+  built or pushed; from other files, the run fails until `IMAGE_REVISION` is
+  raised. A digest therefore stays valid as long as its revision tag exists,
+  and production can pin it.
 - Each workflow runs only for changes under its own `containers/<app>/`, its
-  own workflow file and, for a mirror, `build.yml`. A change to `build.yml`
-  therefore rebuilds and republishes every mirror.
+  own workflow file, `ci-published.sh` and, for a mirror, `build.yml`.
 
 ## Mirrors
 
@@ -67,17 +73,26 @@ workflow that owns the path filters and hands over to the shared
   `latest` for the branch with the **highest `APP_VERSION`**, not the highest
   directory name: upstream may keep its newest release in a directory named
   for the major version and older ones in directories named for a minor;
-- builds amd64 first, runs `ci-smoke.sh` against it, and only then builds both
-  arches and pushes;
+- on `main`, skips every branch whose revision tag is already published, so the
+  moving tags only move when a new revision is pushed. The hash leaves out
+  `docker-compose.yml`, which is not part of the image;
+- otherwise builds amd64 first, runs `ci-smoke.sh` against it, and only then
+  builds both arches and pushes all of the branch's tags. Pull requests build
+  and smoke-test every branch, published or not;
 - after publishing, deletes the untagged manifests that no tag reaches any more.
-  Every run pushes every tag again, the `-r<revision>` one included, so each
-  run leaves the previous images behind, and a digest is kept only while a tag
-  points at it. Deleting needs the `GHCR_TOKEN` repository secret, a classic
-  token with `write:packages` and `delete:packages`, because `GITHUB_TOKEN`
-  cannot delete versions of a user-owned package; without it, the prune is
-  skipped.
+  A published image keeps its revision tag, so this only removes what is left
+  untagged some other way, such as the images re-pushes orphaned before
+  revision tags were pushed only once. Deleting needs the `GHCR_TOKEN`
+  repository secret, a classic token with `write:packages` and
+  `delete:packages`, because `GITHUB_TOKEN` cannot delete versions of a
+  user-owned package; without it, the prune is skipped.
 
-`workflow_dispatch` takes an optional single branch to build.
+`workflow_dispatch` takes an optional single branch to build. Rebuilding a
+published revision, for example to pick up a new `minideb`, means raising
+`IMAGE_REVISION` in its Dockerfile.
+
+Images pushed before the build-files label existed carry none. They count as
+published, and are not compared, until their branch moves to a new revision.
 
 ### Adding or refreshing a version branch
 
@@ -106,13 +121,12 @@ mirror, so check both before assuming an old version can still be rebuilt.
 
 ## Derived images
 
-A derived image has its own workflow instead of `build.yml`, because production
-pins it by digest:
+A derived image has its own workflow instead of `build.yml`, because it is
+built and tested differently:
 
-- **One tag per build, `<upstream tag>-r<revision>`, never pushed twice and
-  never pruned.** `build.yml` pushes moving tags again and then deletes the
-  manifests that orphans — which, for an image pinned by digest, deletes the
-  one in use. The app's README keeps a table of what each revision holds.
+- **One tag per build, `<upstream tag>-r<revision>`, and nothing else.** No
+  moving tags, and nothing is ever pruned. The app's README keeps a table of
+  what each revision holds.
 - **The build that was tested is the build that is pushed**, as a file handed
   from one job to the next. The job that builds it holds no write token and no
   secret, so it can run code that is not ours, such as a plugin's test suite.

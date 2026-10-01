@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Says whether a netbox tag is already on GHCR, and if so whether it was built
-# from the same files. Called by .github/workflows/netbox.yml with IMAGE, TAG
-# and BUILD_HASH set.
+# Says whether a revision tag is already on GHCR, and if so whether it was built
+# from the same files. Called by .github/workflows/netbox.yml and build.yml with
+# IMAGE, TAG and BUILD_HASH set.
 #
-# A published tag is never pushed again: production pins the image by digest,
-# and a second push of the same tag would leave that digest with no tag
+# A published revision tag is never pushed again: production pins images by
+# digest, and a second push of the same tag would leave that digest with no tag
 # pointing at it. So the answer is one of
 #
 #   state=absent      nothing under that tag (or nothing we are allowed to see)
 #   state=same        published, from these build files: there is nothing to do
+#   state=unlabelled  published before images carried the build-files label, so
+#                     it cannot be compared; only with ACCEPT_UNLABELLED=1,
+#                     which the mirrors set for the images they pushed before
+#                     the label existed. Treated as published.
 #   (exit 1)          published, from other build files: IMAGE_REVISION in the
 #                     Dockerfile was not raised
 #
@@ -97,6 +101,12 @@ echo "config=$config"
 if [ "$published" = "$BUILD_HASH" ]; then
   echo "$IMAGE:$TAG is published from these build files, as $digest" >&2
   echo "state=same"
+  exit 0
+fi
+
+if [ -z "$published" ] && [ "${ACCEPT_UNLABELLED:-}" = 1 ]; then
+  echo "::warning::$IMAGE:$TAG is published as $digest without label $label, so its build files cannot be compared; counting it as published. Raise IMAGE_REVISION if they changed." >&2
+  echo "state=unlabelled"
   exit 0
 fi
 

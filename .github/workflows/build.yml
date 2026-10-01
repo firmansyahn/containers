@@ -72,6 +72,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # One run per branch at a time, so two pushes to main in a row cannot both
+    # find the revision tag absent and both push it. A run on main is never
+    # cancelled halfway.
+    concurrency:
+      group: build-${{ inputs.app }}-${{ matrix.branch }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -99,7 +105,13 @@ jobs:
           [ "${#description}" -le 512 ] || \
             { echo "::error::description is ${#description} chars, GHCR caps it at 512"; exit 1; }
 
-          tags="${image}:${app_version}-debian-12-r${revision}
+          # Everything that goes into the image. The compose file only says how
+          # to run it, and upstream edits it without a new revision.
+          build_hash=$(cd "$context" && find . -type f ! -name docker-compose.yml -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+
+          rev_tag="${app_version}-debian-12-r${revision}"
+          tags="${image}:${rev_tag}
           ${image}:${app_version}"
           # A branch pinned to one exact patch (keycloak "26.6.1") is named
           # after its version, so its branch tag is already in the list.
@@ -116,6 +128,8 @@ jobs:
             echo "context=$context"
             echo "image=$image"
             echo "app_version=$app_version"
+            echo "rev_tag=$rev_tag"
+            echo "build_hash=$build_hash"
             echo "description=$description"
             echo "test_tag=${image}:ci-${{ github.run_id }}-${{ matrix.branch }}"
             echo "tags<<EOF"
@@ -123,14 +137,39 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # A revision tag is pushed once. Production pins these images by digest,
+      # and a second push of the same tag would leave that digest with no tag
+      # pointing at it, which the prune job below then deletes. So on main a
+      # revision that is already on GHCR is neither built nor pushed again, and
+      # its moving tags stay where they are until a new revision is published.
+      # Pull requests still build and smoke-test every branch, and fail here
+      # if a branch's build files changed without a new IMAGE_REVISION.
+      #
+      # Images pushed before the build-files label existed carry none; they
+      # count as published (ACCEPT_UNLABELLED).
+      - id: published
+        name: Is ${{ steps.meta.outputs.rev_tag }} on GHCR already?
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.rev_tag }}
+          BUILD_HASH: ${{ steps.meta.outputs.build_hash }}
+          ACCEPT_UNLABELLED: '1'
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-published.sh | tee -a "$GITHUB_OUTPUT"
+
       - uses: docker/setup-qemu-action@v4
+        if: github.event_name == 'pull_request' || steps.published.outputs.state == 'absent'
       - uses: docker/setup-buildx-action@v4
+        if: github.event_name == 'pull_request' || steps.published.outputs.state == 'absent'
 
       # Optional: avoids anonymous Docker Hub rate limits when pulling
       # bitnami/minideb. Set the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN
       # secret on the repo to enable; skipped entirely when they are absent.
       - name: Log in to Docker Hub
-        if: vars.DOCKERHUB_USERNAME != ''
+        if: vars.DOCKERHUB_USERNAME != '' && (github.event_name == 'pull_request' || steps.published.outputs.state == 'absent')
         uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -147,7 +186,7 @@ jobs:
       # escape hatch if that access is ever lost, or for a package created
       # outside Actions again; set the secret and it takes over.
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.published.outputs.state == 'absent'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -155,6 +194,7 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build amd64 for smoke test
+        if: github.event_name == 'pull_request' || steps.published.outputs.state == 'absent'
         uses: docker/build-push-action@v7
         with:
           context: ${{ steps.meta.outputs.context }}
@@ -165,6 +205,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ inputs.app }}-${{ matrix.branch }}
 
       - name: Smoke test
+        if: github.event_name == 'pull_request' || steps.published.outputs.state == 'absent'
         env:
           IMAGE: ${{ steps.meta.outputs.test_tag }}
           WANT: ${{ steps.meta.outputs.app_version }}
@@ -175,7 +216,7 @@ jobs:
           "$script"
 
       - name: Build and push ${{ env.PLATFORMS }}
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.published.outputs.state == 'absent'
         uses: docker/build-push-action@v7
         with:
           context: ${{ steps.meta.outputs.context }}
@@ -187,10 +228,13 @@ jobs:
           # "Application packaged by Broadcom, Inc." and vendor "Broadcom,
           # Inc." — true of the tarball inside, wrong about who built and
           # publishes the image, which is whoever owns this repo.
+          # build-files is what the next run compares to decide the revision
+          # is already published.
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=${{ steps.meta.outputs.description }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
+            io.github.firmansyahn.containers.build-files=${{ steps.meta.outputs.build_hash }}
           # GHCR takes the package-page description from the *index*
           # annotations, not from the per-arch labels above, so a multi-arch
           # image shows no description at all unless it is set here as well.
@@ -206,14 +250,40 @@ jobs:
           cache-from: type=gha,scope=${{ inputs.app }}-${{ matrix.branch }}
           cache-to: type=gha,mode=max,scope=${{ inputs.app }}-${{ matrix.branch }}
 
+      # What the next run will see: the revision, labelled with these build
+      # files. Without the label it would fail as "changed without a new
+      # IMAGE_REVISION" instead of counting as published.
+      - name: Read it back
+        if: github.event_name != 'pull_request' && steps.published.outputs.state == 'absent'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.rev_tag }}
+          BUILD_HASH: ${{ steps.meta.outputs.build_hash }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          back=$(.github/scripts/ci-published.sh)
+          echo "$back"
+          [[ "$back" == *state=same* ]] || \
+            { echo "::error::$IMAGE:$TAG is not on GHCR with this build's label"; exit 1; }
+
       - name: Summary
         if: github.event_name != 'pull_request'
+        env:
+          STATE: ${{ steps.published.outputs.state }}
+          DIGEST: ${{ steps.published.outputs.digest }}
+          REV_TAG: ${{ steps.meta.outputs.rev_tag }}
         run: |
           {
             echo "### ${{ inputs.app }} ${{ steps.meta.outputs.app_version }}"
-            echo '```'
-            echo '${{ steps.meta.outputs.tags }}'
-            echo '```'
+            if [ "$STATE" = absent ]; then
+              echo '```'
+              echo '${{ steps.meta.outputs.tags }}'
+              echo '```'
+            else
+              echo "\`$REV_TAG\` is already published as \`$DIGEST\`. Nothing built or pushed."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   prune:
@@ -228,9 +298,12 @@ jobs:
     concurrency: prune-${{ inputs.app }}
     steps:
       # Every tag is a multi-arch index, and GHCR lists that index's per-arch
-      # children as their own untagged versions. Re-pushing a moving tag like
-      # :latest or :8.6 leaves the old index and its children behind forever —
-      # 16 had piled up under redis before this job existed.
+      # children as their own untagged versions. Re-pushing a tag leaves the
+      # old index and its children behind forever — 16 had piled up under
+      # redis before this job existed. Revision tags are no longer pushed
+      # twice, so a published image keeps at least that tag and is never
+      # orphaned by a later run; this is left to clean up what is untagged
+      # anyway.
       #
       # So "untagged" is not the same as "unused": a child is still serving
       # pulls for its architecture. Deleting untagged wholesale breaks

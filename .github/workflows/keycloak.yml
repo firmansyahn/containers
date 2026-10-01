@@ -7,11 +7,13 @@ on:
       - 'containers/keycloak/**'
       - '.github/workflows/keycloak.yml'
       - '.github/workflows/build.yml'
+      - '.github/scripts/ci-published.sh'
   pull_request:
     paths:
       - 'containers/keycloak/**'
       - '.github/workflows/keycloak.yml'
       - '.github/workflows/build.yml'
+      - '.github/scripts/ci-published.sh'
   workflow_dispatch:
     inputs:
       branch:

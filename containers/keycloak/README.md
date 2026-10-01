@@ -68,7 +68,7 @@ Non-root container images add an extra layer of security and are generally recom
 
 Each branch is published as `<version>-debian-12-r<revision>`, `<version>` and `<branch>`, and the branch with the highest version also as `latest`; the table above lists them.
 
-Every run of the workflow builds every branch and pushes all of these tags again, the `-r<revision>` one included, so each tag moves to a new digest even when nothing changed. The previous digest is deleted once no tag points at it. **Pin a tag, not a digest.**
+A `-r<revision>` tag is pushed once and never again, so its digest stays valid: **pin that tag, or its digest**. `<version>`, `<branch>` and `latest` move to the new image when a branch gets a new revision; the image they leave keeps its `-r<revision>` tag.
 
 ## Get this image
 
