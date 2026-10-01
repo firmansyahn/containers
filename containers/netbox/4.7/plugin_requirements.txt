@@ -7,7 +7,7 @@
 # because the smoke test compares this file with that output.
 #
 # Changing anything here is a new IMAGE_REVISION in the Dockerfile, a new row
-# in the revision table of the root README, and, for a plugin, a matching line
+# in the revision table of ../README.md, and, for a plugin, a matching line
 # in ../ci-plugin-tests.sh.
 
 netbox-routing==0.5.0 \

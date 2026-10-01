@@ -21,8 +21,7 @@ plugin on are two separate changes.
 `<netbox-docker tag>-r<revision>`, for example `v4.7.1-5.1.1-r0`. The revision
 is `IMAGE_REVISION` in the Dockerfile: it goes up by one whenever anything in
 the version directory changes on the same base, and a new base starts again at
-`r0`. The [revision table](../../README.md#netbox-revisions) in the root README
-says what each one holds.
+`r0`. The [revision table](#revisions) says what each one holds.
 
 - **A published tag is never pushed again, and nothing is pruned.** Production
   pins the image by digest. A rebuild under the same tag would leave that
@@ -57,6 +56,18 @@ cat /opt/netbox/plugin_requirements.txt
 | `org.opencontainers.image.base.name`, `.base.digest` | the netbox-docker image it was built on |
 | `org.opencontainers.image.source`, `.revision` | this repo, and the commit it was built from |
 
+## Revisions
+
+The tag does not say what is inside, so this table does. A row is added in the
+commit that makes a new tag; the same list is in each image's
+`io.github.firmansyahn.containers.packages` label. Every tag here stays
+published.
+
+| tag | base | netbox-routing | netbox-topology-views | netbox-security | also added | added |
+| --- | ---- | -------------- | --------------------- | --------------- | ---------- | ----- |
+| `v4.7.1-5.1.1-r0` | `netboxcommunity/netbox:v4.7.1-5.1.1` at `sha256:59e3e595…11e74` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-09-30 |
+| `v4.7.2-5.1.1-r0` | `netboxcommunity/netbox:v4.7.2-5.1.1` at `sha256:ad038bdb…33066` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-10-01 |
+
 ## Changing it
 
 One version directory at a time. Everything below is one commit.
@@ -73,15 +84,21 @@ One version directory at a time. Everything below is one commit.
    in `NO_SUITE` (why not). The script refuses a package that is in neither.
 4. If the plugin ships static files, add it to the `PLUGINS` line the
    Dockerfile writes for `collectstatic`. The smoke test fails until it is.
-5. Add a row to the [revision table](../../README.md#netbox-revisions).
+5. Add a row to the [revision table](#revisions).
 
 **Move to a new NetBox**
 
 1. Check that every plugin has a release that supports it. None of the three
    sets a `max_version`, so NetBox will not refuse one for you.
-2. Rename the directory, put the new netbox-docker tag **and its index digest**
-   in `FROM`, set `IMAGE_REVISION` back to `0`, update `CONTEXT` in the
-   workflow, and go through the list above for whatever plugin versions change.
+2. Put the new netbox-docker tag **and its index digest** in `FROM` and set
+   `IMAGE_REVISION` back to `0`. A new minor version also renames the
+   directory and updates `CONTEXT` in the workflow; a patch release stays in
+   its directory (4.7.2 replaced 4.7.1 in `4.7`). Go through the list above
+   for whatever plugin versions change, and add a row to the revision table
+   either way.
+
+The tag built before stays on GHCR, as every tag does, but the directory now
+builds the new one only. Its build files are in git history.
 
 ## What CI does
 
@@ -128,10 +145,10 @@ A pull request builds and tests, and pushes nothing.
 
 ## After the first push
 
-GHCR creates the package **private**, and no API changes that (see the
-[GHCR notes](../../README.md#ghcr-notes)). A cluster with no pull secret gets
-`ImagePullBackOff`. Make it public on the package's settings page; the `push`
-job warns on every run until a pull without a credential works.
+GHCR creates the package **private**, even under a public repo, and no API
+changes that. A cluster with no pull secret gets `ImagePullBackOff`. Make it
+public in the Danger Zone of the package's settings page; the `push` job warns
+on every run until a pull without a credential works.
 
 ## Who decides what runs
 
