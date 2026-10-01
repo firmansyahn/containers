@@ -4,7 +4,7 @@
 # The published tag is <tag of FROM>-r<IMAGE_REVISION>. The workflow reads both
 # out of this file, so the base is named by tag *and* digest: the tag is for
 # the reader and for our own tag, the digest is what gets pulled.
-FROM docker.io/netboxcommunity/netbox:v4.7.1-5.1.1@sha256:59e3e5954d0243d8648f2fa7ba82cf7c7770aaeef392026cca8b21cd67411e74
+FROM docker.io/netboxcommunity/netbox:v4.7.2-5.1.1@sha256:ad038bdb0e3498e5bf81c2c8becf396d62cbdc118d0b491b4d58014968033066
 
 # Goes up by one whenever anything in this directory changes on the same base;
 # a new base starts again at 0. A published tag is never pushed twice, so a

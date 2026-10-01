@@ -13,7 +13,7 @@ multi-arch for `linux/amd64` and `linux/arm64`.
 | --- | -------- | ------ |
 | [redis](containers/redis) | 8.10, 8.6, 8.2 | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/redis) |
 | [keycloak](containers/keycloak) | 26 (26.7.4), 26.6 (26.6.4), 26.6.1 | [bitnami/containers](https://github.com/bitnami/containers/tree/main/bitnami/keycloak) |
-| [netbox](containers/netbox) | 4.7 (`v4.7.1-5.1.1-r0`) | **derived, not a mirror**: [netbox-docker](https://github.com/netbox-community/netbox-docker) plus pinned plugins from PyPI — see [netbox](#netbox) |
+| [netbox](containers/netbox) | 4.7 (`v4.7.2-5.1.1-r0`) | **derived, not a mirror**: [netbox-docker](https://github.com/netbox-community/netbox-docker) plus pinned plugins from PyPI — see [netbox](#netbox) |
 
 ## Layout
 
@@ -109,6 +109,7 @@ commit that raises `IMAGE_REVISION`; the same list is in each image's
 | tag | base | netbox-routing | netbox-topology-views | netbox-security | also added | added |
 | --- | ---- | -------------- | --------------------- | --------------- | ---------- | ----- |
 | `v4.7.1-5.1.1-r0` | `netboxcommunity/netbox:v4.7.1-5.1.1` at `sha256:59e3e595…11e74` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-09-30 |
+| `v4.7.2-5.1.1-r0` | `netboxcommunity/netbox:v4.7.2-5.1.1` at `sha256:ad038bdb…33066` | 0.5.0 | 4.7.0 | 1.6.8 | django-polymorphic 4.11.7, required by netbox-routing | 2026-10-01 |
 
 ## GHCR notes
 

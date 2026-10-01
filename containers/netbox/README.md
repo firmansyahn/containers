@@ -79,9 +79,15 @@ One version directory at a time. Everything below is one commit.
 
 1. Check that every plugin has a release that supports it. None of the three
    sets a `max_version`, so NetBox will not refuse one for you.
-2. Rename the directory, put the new netbox-docker tag **and its index digest**
-   in `FROM`, set `IMAGE_REVISION` back to `0`, update `CONTEXT` in the
-   workflow, and go through the list above for whatever plugin versions change.
+2. Put the new netbox-docker tag **and its index digest** in `FROM` and set
+   `IMAGE_REVISION` back to `0`. A new minor version also renames the
+   directory and updates `CONTEXT` in the workflow; a patch release stays in
+   its directory (4.7.2 replaced 4.7.1 in `4.7`). Go through the list above
+   for whatever plugin versions change, and add a row to the revision table
+   either way.
+
+The tag built before stays on GHCR, as every tag does, but the directory now
+builds the new one only. Its build files are in git history.
 
 ## What CI does
 
