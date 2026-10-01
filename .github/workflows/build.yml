@@ -1,8 +1,9 @@
 name: build
 
 # Reusable build for one app. Called by the per-app workflows, which own the
-# path filters; everything below is driven by what is actually in the tree, so
-# adding a version branch never needs a workflow edit.
+# path filters and may choose the platforms; everything below is driven by what
+# is actually in the tree, so adding a version branch never needs a workflow
+# edit.
 on:
   workflow_call:
     inputs:
@@ -15,10 +16,14 @@ on:
         required: false
         type: string
         default: ''
+      platforms:
+        description: 'Platforms to build and push, comma-separated'
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64'
 
 env:
   REGISTRY: ghcr.io
-  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   discover:
@@ -31,26 +36,32 @@ jobs:
       - uses: actions/checkout@v7
 
       - id: branches
-        name: List containers/${{ inputs.app }}/*/debian-12
+        name: List containers/${{ inputs.app }}/*/debian-*
         run: |
           set -euo pipefail
           app='${{ inputs.app }}'
-          branches=$(find "containers/$app" -mindepth 2 -maxdepth 2 -type d -name debian-12 \
-            | cut -d/ -f3 | sort -V)
-          [ -n "$branches" ] || { echo "::error::no version branches found under containers/$app"; exit 1; }
+          # One build context per branch, named after its OS flavour: debian-12
+          # for the mirrors, as Bitnami built them; a packaged image may be on a
+          # later release.
+          contexts=$(find "containers/$app" -mindepth 2 -maxdepth 2 -type d -name 'debian-*' | sort -V)
+          [ -n "$contexts" ] || { echo "::error::no version branches found under containers/$app"; exit 1; }
+          branches=$(cut -d/ -f3 <<< "$contexts" | sort -V)
+          dupes=$(uniq -d <<< "$branches" | paste -sd' ')
+          [ -z "$dupes" ] || { echo "::error::more than one debian-* build context in branch $dupes"; exit 1; }
 
           # :latest follows the highest APP_VERSION, not the highest directory
           # name — keycloak keeps its newest release in a branch called "26"
           # while older ones sit in "26.6" and "26.6.1".
           latest_branch=''; latest_version=''
-          while read -r b; do
-            v=$(grep -oP '\bAPP_VERSION="\K[^"]+' "containers/$app/$b/debian-12/Dockerfile")
-            echo "  $b -> $v"
+          while read -r c; do
+            b=$(cut -d/ -f3 <<< "$c")
+            v=$(grep -oP '\bAPP_VERSION="\K[^"]+' "$c/Dockerfile")
+            echo "  $b -> $v (${c##*/})"
             if [ -z "$latest_version" ] || \
                [ "$(printf '%s\n%s\n' "$latest_version" "$v" | sort -V | tail -1)" = "$v" ]; then
               latest_version="$v"; latest_branch="$b"
             fi
-          done <<< "$branches"
+          done <<< "$contexts"
           echo "latest=$latest_branch" >> "$GITHUB_OUTPUT"
 
           wanted='${{ inputs.branch }}'
@@ -83,10 +94,22 @@ jobs:
 
       - id: meta
         name: Read version out of the Dockerfile
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-          context="containers/${{ inputs.app }}/${{ matrix.branch }}/debian-12"
+          branch_dir="containers/${{ inputs.app }}/${{ matrix.branch }}"
+          contexts=("$branch_dir"/debian-*)
+          [ "${#contexts[@]}" -eq 1 ] && [ -d "${contexts[0]}" ] || \
+            { echo "::error::expected one $branch_dir/debian-* build context, found: ${contexts[*]}"; exit 1; }
+          context="${contexts[0]}"
+          os_flavour="${context##*/}"
           dockerfile="$context/Dockerfile"
+
+          # The flavour goes into the revision tag, so the directory has to name
+          # what the Dockerfile builds on.
+          grep -q "OS_FLAVOUR=\"$os_flavour\"" "$dockerfile" || \
+            { echo "::error file=$dockerfile::OS_FLAVOUR is not \"$os_flavour\", as its directory says"; exit 1; }
 
           # Bitnami stamps both of these into every release commit, so the tags
           # always match whatever tarball the Dockerfile actually pulls.
@@ -110,7 +133,17 @@ jobs:
           build_hash=$(cd "$context" && find . -type f ! -name docker-compose.yml -print0 \
             | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
 
-          rev_tag="${app_version}-debian-12-r${revision}"
+          # BuildKit refuses index annotations when it exports no index, as it
+          # does for a single platform without attestations. That image carries
+          # them on its manifest only, and GHCR reads its description from the
+          # label, as for netbox.
+          if [[ "$PLATFORMS" == *,* ]]; then
+            annotation_levels='index,manifest'
+          else
+            annotation_levels='manifest'
+          fi
+
+          rev_tag="${app_version}-${os_flavour}-r${revision}"
           tags="${image}:${rev_tag}
           ${image}:${app_version}"
           # A branch pinned to one exact patch (keycloak "26.6.1") is named
@@ -131,6 +164,7 @@ jobs:
             echo "rev_tag=$rev_tag"
             echo "build_hash=$build_hash"
             echo "description=$description"
+            echo "annotation_levels=$annotation_levels"
             echo "test_tag=${image}:ci-${{ github.run_id }}-${{ matrix.branch }}"
             echo "tags<<EOF"
             echo "$tags" | sed 's/^ *//'
@@ -161,7 +195,7 @@ jobs:
           .github/scripts/ci-published.sh | tee -a "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v4
-        if: github.event_name == 'pull_request' || steps.published.outputs.state == 'absent'
+        if: inputs.platforms != 'linux/amd64' && (github.event_name == 'pull_request' || steps.published.outputs.state == 'absent')
       - uses: docker/setup-buildx-action@v4
         if: github.event_name == 'pull_request' || steps.published.outputs.state == 'absent'
 
@@ -175,8 +209,8 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Normally GITHUB_TOKEN, which is what runs today: both packages grant
-      # this repo Write under their Actions access settings.
+      # Normally GITHUB_TOKEN, which is what runs today: the redis and keycloak
+      # packages grant this repo Write under their Actions access settings.
       #
       # That had to be granted by hand. These packages were first pushed by the
       # Bitnami rescue rather than by Actions, so nothing linked them to this
@@ -215,12 +249,12 @@ jobs:
           [ -x "$script" ] || { echo "::error::$script is missing or not executable"; exit 1; }
           "$script"
 
-      - name: Build and push ${{ env.PLATFORMS }}
+      - name: Build and push ${{ inputs.platforms }}
         if: github.event_name != 'pull_request' && steps.published.outputs.state == 'absent'
         uses: docker/build-push-action@v7
         with:
           context: ${{ steps.meta.outputs.context }}
-          platforms: ${{ env.PLATFORMS }}
+          platforms: ${{ inputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           # Links the GHCR package to this repo in the UI. description and
@@ -239,12 +273,15 @@ jobs:
           # annotations, not from the per-arch labels above, so a multi-arch
           # image shows no description at all unless it is set here as well.
           # vendor rides along to keep both metadata planes saying the same
-          # thing, though nothing on the package page renders it.
+          # thing, though nothing on the package page renders it. A
+          # single-platform image has no index: annotation_levels is then
+          # just "manifest", and GHCR reads the label.
           annotations: |
-            index,manifest:org.opencontainers.image.description=${{ steps.meta.outputs.description }}
-            index,manifest:org.opencontainers.image.vendor=${{ github.repository_owner }}
+            ${{ steps.meta.outputs.annotation_levels }}:org.opencontainers.image.description=${{ steps.meta.outputs.description }}
+            ${{ steps.meta.outputs.annotation_levels }}:org.opencontainers.image.vendor=${{ github.repository_owner }}
           # Keep the manifest list a plain multi-arch index, like the images
-          # this mirror replaces — no unknown/unknown attestation entries.
+          # this mirror replaces — no unknown/unknown attestation entries. A
+          # single platform with no attestation is one plain image manifest.
           provenance: false
           sbom: false
           cache-from: type=gha,scope=${{ inputs.app }}-${{ matrix.branch }}
@@ -253,7 +290,8 @@ jobs:
       # What the next run will see: the revision, labelled with these build
       # files. Without the label it would fail as "changed without a new
       # IMAGE_REVISION" instead of counting as published.
-      - name: Read it back
+      - id: readback
+        name: Read it back
         if: github.event_name != 'pull_request' && steps.published.outputs.state == 'absent'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -268,12 +306,23 @@ jobs:
           [[ "$back" == *state=same* ]] || \
             { echo "::error::$IMAGE:$TAG is not on GHCR with this build's label"; exit 1; }
 
+          # Images are pulled without a credential, and GHCR creates every
+          # package private. No API changes that: it is the Danger Zone on the
+          # package's settings page.
+          if [[ "$(GHCR_USER='' GHCR_TOKEN='' .github/scripts/ci-published.sh 2>/dev/null)" == *state=same* ]]; then
+            echo "public=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "public=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::$IMAGE is not public: a pull without a credential fails. Make it public in the package settings before anything pulls it."
+          fi
+
       - name: Summary
         if: github.event_name != 'pull_request'
         env:
           STATE: ${{ steps.published.outputs.state }}
           DIGEST: ${{ steps.published.outputs.digest }}
           REV_TAG: ${{ steps.meta.outputs.rev_tag }}
+          PUBLIC: ${{ steps.readback.outputs.public }}
         run: |
           {
             echo "### ${{ inputs.app }} ${{ steps.meta.outputs.app_version }}"
@@ -281,6 +330,7 @@ jobs:
               echo '```'
               echo '${{ steps.meta.outputs.tags }}'
               echo '```'
+              echo "Pullable without a credential: ${PUBLIC:-unknown}"
             else
               echo "\`$REV_TAG\` is already published as \`$DIGEST\`. Nothing built or pushed."
             fi
@@ -297,7 +347,7 @@ jobs:
     # the registry, so a concurrent run could see a half-pushed index.
     concurrency: prune-${{ inputs.app }}
     steps:
-      # Every tag is a multi-arch index, and GHCR lists that index's per-arch
+      # A multi-arch tag is an index, and GHCR lists that index's per-arch
       # children as their own untagged versions. Re-pushing a tag leaves the
       # old index and its children behind forever — 16 had piled up under
       # redis before this job existed. Revision tags are no longer pushed

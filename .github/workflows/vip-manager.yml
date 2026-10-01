@@ -1,0 +1,36 @@
+name: vip-manager
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'containers/vip-manager/**'
+      - '.github/workflows/vip-manager.yml'
+      - '.github/workflows/build.yml'
+      - '.github/scripts/ci-published.sh'
+  pull_request:
+    paths:
+      - 'containers/vip-manager/**'
+      - '.github/workflows/vip-manager.yml'
+      - '.github/workflows/build.yml'
+      - '.github/scripts/ci-published.sh'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Version branch to build (blank = all branches present in the repo)'
+        required: false
+        default: ''
+
+jobs:
+  vip-manager:
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+    with:
+      app: vip-manager
+      branch: ${{ inputs.branch || '' }}
+      # Upstream ships arm64 too, but the image is built and tested for amd64
+      # only; its Dockerfile refuses any other architecture.
+      platforms: linux/amd64
