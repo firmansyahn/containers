@@ -145,10 +145,10 @@ A pull request builds and tests, and pushes nothing.
 
 ## After the first push
 
-GHCR creates the package **private**, and no API changes that (see the
-[GHCR notes](../../README.md#ghcr-notes)). A cluster with no pull secret gets
-`ImagePullBackOff`. Make it public on the package's settings page; the `push`
-job warns on every run until a pull without a credential works.
+GHCR creates the package **private**, even under a public repo, and no API
+changes that. A cluster with no pull secret gets `ImagePullBackOff`. Make it
+public in the Danger Zone of the package's settings page; the `push` job warns
+on every run until a pull without a credential works.
 
 ## Who decides what runs
 

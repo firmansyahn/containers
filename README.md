@@ -1,4 +1,4 @@
-# containers
+# The Containers Library
 
 Container images built in this repo and published to
 `ghcr.io/firmansyahn/containers/<app>`.
@@ -69,10 +69,13 @@ workflow that owns the path filters and hands over to the shared
   for the major version and older ones in directories named for a minor;
 - builds amd64 first, runs `ci-smoke.sh` against it, and only then builds both
   arches and pushes;
-- after publishing, deletes the untagged manifests that no tag reaches any more
-  — every re-push of a moving tag like `latest` orphans the old image. This
-  needs the `GHCR_TOKEN` secret and is skipped without it; see
-  [GHCR notes](#ghcr-notes).
+- after publishing, deletes the untagged manifests that no tag reaches any more.
+  Every run pushes every tag again, the `-r<revision>` one included, so each
+  run leaves the previous images behind, and a digest is kept only while a tag
+  points at it. Deleting needs the `GHCR_TOKEN` repository secret, a classic
+  token with `write:packages` and `delete:packages`, because `GITHUB_TOKEN`
+  cannot delete versions of a user-owned package; without it, the prune is
+  skipped.
 
 `workflow_dispatch` takes an optional single branch to build.
 
@@ -114,59 +117,27 @@ pins it by digest:
   from one job to the next. The job that builds it holds no write token and no
   secret, so it can run code that is not ours, such as a plugin's test suite.
   The job that pushes runs nothing from the image and uses the workflow's own
-  token, not `GHCR_TOKEN`.
+  token.
 - **One architecture per test job.** What is pushed is the very image the
   tests ran in, so a second architecture is a second build-and-test job, not a
   second platform on one build.
 
-## GHCR notes
+## License
 
-Two things that are settings, not code, and cost an afternoon each if unknown:
+Copyright © 2026 Firmansyah Nainggolan
 
-- **Packages are private by default, even under a public repo**, and no API
-  changes it — it is the Danger Zone on the package settings page in the web UI.
-  A new package has to be made public by hand after its first push.
-- **`GITHUB_TOKEN` cannot push to a package that was not created by Actions.**
-  The first packages here were pushed by hand, so every push failed with
-  `denied: permission_denied: write_package` until this repo was given Write
-  under each package's **Manage Actions access** setting. There is no API for
-  that — not REST, not GraphQL, and the `org.opencontainers.image.source` label
-  does not do it retroactively — so it is a click on each package's settings
-  page, once. A package that Actions created has that access already.
+Licensed under the Apache License, Version 2.0 (the "License"); see
+[LICENSE.md](LICENSE.md). You may not use the files in this repository except
+in compliance with the License. You may obtain a copy of the License at
+<http://www.apache.org/licenses/LICENSE-2.0>.
 
-  Pushing works with plain `GITHUB_TOKEN` now that the access is granted.
-  Pruning does not: **`GITHUB_TOKEN` cannot delete versions of a user-owned
-  package**, only an org-owned one. That is what the `GHCR_TOKEN` secret is
-  for. When it is set, `build.yml` uses it for both the push login and the
-  prune job; when it is absent, pushes fall back to `GITHUB_TOKEN` and prune is
-  skipped with a notice. Derived images never use it.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 
-### `GHCR_TOKEN`
-
-A **classic** personal access token. GitHub Packages does not accept
-fine-grained tokens, and classic tokens are the ones that offer
-**No expiration**. It needs exactly two scopes:
-
-| scope | used for |
-| ----- | -------- |
-| `write:packages` (includes `read:packages`) | pushing, and reading tags and package versions for prune |
-| `delete:packages` | prune's version deletes |
-
-Do not add `repo`: container packages have their own permissions, so nothing
-here needs it. The token page ticks `repo` automatically as soon as
-`write:packages` is ticked, so create the token from this link instead, which
-pre-selects just the two scopes:
-
-<https://github.com/settings/tokens/new?scopes=write:packages,delete:packages&description=containers%20GHCR_TOKEN>
-
-Store it as a repository secret. `gh` prompts for the value, so it stays out
-of shell history:
-
-```bash
-gh secret set GHCR_TOKEN -R firmansyahn/containers
-```
-
-A classic token covers every package on the account, not just this repo's,
-and anyone who can edit workflows on `main` can use it. Fork pull requests
-never receive secrets. Revoke it at <https://github.com/settings/tokens> if it
-is ever in doubt.
+A mirror's build files, and the parts of its README taken from upstream, are
+Bitnami's: Copyright Broadcom, Inc., under the same license, as their file
+headers say. The images themselves contain third-party software under its own
+licenses.
